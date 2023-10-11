@@ -24,11 +24,6 @@
 
 # Setup
 source /users/afengler/.bashrc
-# module load cudnn/8.2.0
-# module load cuda/11.7.1
-# module load gcc/10.2
-# module load graphviz/2.40.1
-
 conda deactivate
 conda deactivate
 conda activate lan_pipe
@@ -89,13 +84,13 @@ then
             echo "No array ID"
             
             if [ "$backend" == "jax" ]; then
-                python -u scripts/jax_training_script.py --model $model \
+                python -u ../scripts/jax_training_script.py --model $model \
                                              --config_path $config_path \
                                              --config_dict_key 0 \
                                              --network_folder $networks_path \
                                              --dl_workers $dl_workers
             elif [ "$backend" == "torch" ]; then
-                python -u scripts/torch_training_script.py --model $model \
+                python -u ../scripts/torch_training_script.py --model $model \
                                                            --config_path $config_path \
                                                            --config_dict_key 0 \
                                                            --network_folder $networks_path \
@@ -110,13 +105,13 @@ else
             echo "No array ID"
             
             if [ "$backend" == "jax" ]; then
-                python -u scripts/jax_training_script.py --model $model \
+                python -u ../scripts/jax_training_script.py --model $model \
                                                          --config_path $config_path \
                                                          --config_dict_key $SLURM_ARRAY_TASK_ID \
                                                          --network_folder $networks_path \
                                                          --dl_workers $dl_workers
             elif [ "$backend" == "torch" ]; then
-                python -u scripts/torch_training_script.py --model $model \
+                python -u ../scripts/torch_training_script.py --model $model \
                                                            --config_path $config_path \
                                                            --config_dict_key $SLURM_ARRAY_TASK_ID \
                                                            --network_folder $networks_path \

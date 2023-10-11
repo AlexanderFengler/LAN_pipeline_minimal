@@ -46,4 +46,4 @@ while [ ! $# -eq 0 ]
 
 echo "The config file supplied is: $config_file"
 
-python -u scripts/data_generation_script.py --config_file $config_file
+python -u ../scripts/data_generation_script.py --config_file $config_file
