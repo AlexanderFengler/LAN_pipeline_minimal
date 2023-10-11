@@ -1,3 +1,11 @@
+# AF-ADDITIONS
+data/
+data_alt/
+local_tests/
+slurm/
+wandb/
+users/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
