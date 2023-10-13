@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # Run configs (parameters to script) ----------------
-model="ddm" # "ddm_deadline"
-#'ds_conflict_drift'
+acct_name="carney_frankmj-condo" # your oscar account name  / "carney-frankmj-condo"
+
+model="ddm" # the model string (used to identify training data folder) #"ddm_deadline" #'ds_conflict_drift'
 
 # Network training configs -----------
 network_type="cpn" # cpn or lan
@@ -31,27 +32,19 @@ echo $networks_path
 # Train networks ----
 if [ "$partition" == "gpu" ]; then
     sbatch -p gpu --gres=gpu:1 \
-                  --account=carney-frankmj-condo \
+                  --account=$acct_name \
                   --array=0-5 sbatch_scripts/sbatch_network_training.sh \
                   --model $model \
                   --backend $backend \
                   --config_path $network_training_config_path \
                   --networks_path $networks_path \
                   --dl_workers $dl_workers
-                    
 elif [ "$partition" == "cpu" ]; then
-    sbatch -p batch --account=carney-frankmj-condo  \
-                    --array=0-2 sbatch_scripts/sbatch_network_training.sh \
+    sbatch -p batch --account=$acct_name  \
+                    --array=0-5 sbatch_scripts/sbatch_network_training.sh \
                     --model $model \
                     --backend $backend \
                     --config_path $network_training_config_path \
                     --networks_path $networks_path \
-                    --dl_workers $dl_workers
-                    
-    sbatch -p batch --array=2-4 sbatch_scripts/sbatch_network_training.sh \
-                    --model $model \
-                    --backend $backend \
-                    --config_path $network_training_config_path \
-                    --networks_path $networks_path \
-                    --dl_workers $dl_workers                  
+                    --dl_workers $dl_workers           
 fi

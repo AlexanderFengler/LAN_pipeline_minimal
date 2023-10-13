@@ -17,6 +17,7 @@ pip install torch torchvision torchaudio --index-url https://download.pytorch.or
 pip install lanfactory
 pip install ssm-simulators
 pip install jupyter
+pip install frozendict
 ```
 
 If you want to make your new environment available in e.g. Visual Studio Code, run also,
