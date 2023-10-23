@@ -18,6 +18,7 @@ pip install lanfactory
 pip install ssm-simulators
 pip install jupyter
 pip install frozendict
+pip install pyyaml
 ```
 
 If you want to make your new environment available in e.g. Visual Studio Code, run also,
@@ -56,12 +57,19 @@ All other scripts should be generic now.
 
 The basic logic for configs is this. We have one config file that concern *basic account settings*: `af_config_acct.sh`.
 
-For *data generation* we have one `.sh` config (`af_config_data_generation.sh`) and one `.yaml` config (`af_config_data_generation.yaml`).
-The `.sh` config is very simple and just specifies the amount of array jobs you want to run. The `.yaml` config provides a bunch of hyperparameters concerning a tranining data run.
+For *data generation* we have one `.sh` config (`af_config_data_generation.sh`) and one `.yaml` config (`af_config_data_generation.yaml`):
 
-For *network training* likewise we have one `.sh` config (`af_config_network_training.sh`) and one `.yaml` config for a given network type. 
-I provide one example for `cpn` networks (`af_config_network_training_cpn.yaml`) and one for `lan` networks (`af_config_network_training_lan.yaml`).
-Again the `.sh` config provides some very basic settings, and the `.yaml` configs provide detailed instruction to the specific training run.
+1. The `.sh` config is very simple and just specifies the amount of array jobs you want to run. 
+2. The `.yaml` config provides a bunch of hyperparameters concerning a tranining data run.
+
+For *network training* likewise we have one `.sh` config (`af_config_network_training.sh`) and one `.yaml` config for a given network type:
+
+1. I provide one example for `cpn` networks (`af_config_network_training_cpn.yaml`) 
+2. One example  for `lan` networks (`af_config_network_training_lan.yaml`).
+
+Again,
+1.  The `.sh` config provides some very basic settings
+3.  The `.yaml` configs provide detailed instruction to the specific training run.
 
 ### workflow
 
