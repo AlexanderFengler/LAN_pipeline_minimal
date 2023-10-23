@@ -41,21 +41,32 @@ module load cudnn/8.6.0
 
 The pipeline works as a two-step process.
 
-1. Data generation
-
+1. Data generation (to generate training data appropriate for specific, or multiple network types)
 2. Network training
 
-Check the `config_constructor.ipynb` notebook to get guidance on how to create config-files for both *data generation*, as well as *network training* runs.
+You want to respectively run the `bash_data_generation.sh` script for data generation, and the `bash_network_training.sh` script for network training.
+Find example call to these scripts in the `bash_run_example.sh` file (you pass the configs mentioned below as arguments to the `bash` script).
 
-Once you have these configs for your current run of interest (you can reuse training data generated for as many *network training* runs as you like),
-you can use the:
+### `user_configs` folder
 
-1. `bash_data_generation.sh` script to run data generation on the Oscar (specialize the script to use your login and base folders, the rest of the settable parameters pick out the correct data generation config file)
+There are now a few config files that can be changed outside of the main code (no jupyter notebook need to be run anymore for this :)).
+I will run through the examples. The files have the `af_` prefix because these are configs that work for me (my intials). 
+Just copy and rename to create your own. They are only ever passed to the `bash_data_generation.sh` and / or `bash_network_training.sh` scripts.
+All other scripts should be generic now.
 
-2. `bash_network_training.sh` script to run network training on Oscar (this allows you to pick gpu / cpu backend as well as choice amongst jax / pytorch)
+The basic logic for configs is this. We have one config file that concern *basic account settings*: `af_config_acct.sh`.
 
-The `local_network_training.sh` script helps with training networks on your local machine instead.
+For *data generation* we have one `.sh` config (`af_config_data_generation.sh`) and one `.yaml` config (`af_config_data_generation.yaml`).
+The `.sh` config is very simple and just specifies the amount of array jobs you want to run. The `.yaml` config provides a bunch of hyperparameters concerning a tranining data run.
 
-The scripts will automatically generate folders that store the config files, training data and network meta-data as well as trained networks.
+For *network training* likewise we have one `.sh` config (`af_config_network_training.sh`) and one `.yaml` config for a given network type. 
+I provide one example for `cpn` networks (`af_config_network_training_cpn.yaml`) and one for `lan` networks (`af_config_network_training_lan.yaml`).
+Again the `.sh` config provides some very basic settings, and the `.yaml` configs provide detailed instruction to the specific training run.
 
-You should see a fairly straightforwardly navigable `data` folder appear in the **project folder** you specify in the config and bash scripts.
+### workflow
+
+The repo is now organized so that there is a common body of code (which can be improved via PRs) and personal config files.
+I left example configs in the `user_configs` folder, but you can put your configs wherever you like. I was thinking about a workflow where you can create your own branch, add 
+your own configs and otherwise keep pulling changes / improvements from the main branch as they come in.
+
+There are other ways and please leave suggestions if you have a better idea.

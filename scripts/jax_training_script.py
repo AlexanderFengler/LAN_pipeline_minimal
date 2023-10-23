@@ -8,6 +8,12 @@ import torch
 import random
 import numpy as np
 import uuid
+import yaml
+import sys
+import os
+
+sys.path.insert(1, os.path.join(sys.path[0], '..'))
+from config import *
 
 import jax
 from lanfactory.utils import try_gen_folder
@@ -34,16 +40,13 @@ if __name__ == "__main__":
     
     # Interface ----
     CLI = argparse.ArgumentParser()
-    CLI.add_argument("--model",
-                     type=str,
-                     default='nomodel')
     CLI.add_argument("--config_path",
                      type = none_or_str,
                      default = None)
-    CLI.add_argument("--config_dict_key",
+    CLI.add_argument("--network_id",
                      type = none_or_int,
                      default = None)
-    CLI.add_argument("--network_folder",
+    CLI.add_argument("--networks_path_base",
                      type = none_or_str,
                      default = None)
     CLI.add_argument("--dl_workers",
@@ -59,16 +62,25 @@ if __name__ == "__main__":
         n_workers = args.dl_workers
     print('Number of workers we assign to the DataLoader: ', n_workers)
 
-    # Load config dict
-    if args.config_dict_key is None:
-        config_dict = pickle.load(open(args.config_path, 'rb'))[0]
+    # Load config dict (new)
+    if args.network_id is None:
+        config_dict = get_train_network_config(yaml_config_path = args.config_path,
+                                               net_index = 0)
     else:
-        config_dict = pickle.load(open(args.config_path, 'rb'))[args.config_dict_key]
+        config_dict = get_train_network_config(yaml_config_path = args.config_path,
+                                               net_index = args.network_id)
+
+    # # Load config dict
+    # if args.network_id is None:
+    #     config_dict = pickle.load(open(args.config_path, 'rb'))[0]
+    # else:
+    #     config_dict = pickle.load(open(args.config_path, 'rb'))[args.network_id]
 
     print('config dict keys: ')
     print(config_dict.keys())
     train_config = config_dict['config_dict']['train_config']
     network_config = config_dict['config_dict']['network_config']
+    extra_config = config_dict['extra_fields']
     
     print('TRAIN CONFIG')
     print(train_config)
@@ -158,19 +170,21 @@ if __name__ == "__main__":
     run_id = uuid.uuid1().hex
 
     # wandb_project_id
-    wandb_project_id = args.model + '_' + net.network_type
+    wandb_project_id = extra_config['model'] + '_' + network_config['network_type']
     
     # save network config for this run
-    try_gen_folder(folder = args.network_folder,
+    networks_path = args.networks_path_base + '/' + network_config['network_type'] + '/' + extra_config['model']
+    
+    try_gen_folder(folder = networks_path,
                    allow_abs_path_folder_generation = True)
-    pickle.dump(network_config, open(args.network_folder + '/' + run_id + '_' + \
-                                     net.network_type + "_" + args.model + \
+    pickle.dump(network_config, open(networks_path + '/' + run_id + '_' + \
+                                     network_config['network_type'] + "_" + extra_config['model'] + \
                                      '_' + '_network_config.pickle', 'wb'))
             
     # Train model
     model_trainer.train_and_evaluate(save_history = train_config['save_history'],
-                                     output_folder = args.network_folder,
-                                     output_file_id = args.model,
+                                     output_folder = networks_path,
+                                     output_file_id = extra_config['model'],
                                      run_id = run_id,
                                      wandb_on = True,
                                      wandb_project_id = wandb_project_id,
