@@ -46,26 +46,28 @@ The pipeline works as a two-step process.
 2. Network training
 
 You want to respectively run the `bash_data_generation.sh` script for data generation, and the `bash_network_training.sh` script for network training.
-Find example call to these scripts in the `bash_run_example.sh` file (you pass the configs mentioned below as arguments to the `bash` script).
+Find example call to these scripts in the `bash_run.sh` file, which sits in the `user_configs_examples` folder (you pass the configs mentioned below as arguments to the `bash` scripts).
 
-### `user_configs` folder
+### `user_configs_examples` folder
 
 There are now a few config files that can be changed outside of the main code (no jupyter notebook need to be run anymore for this :)).
-I will run through the examples. The files have the `af_` prefix because these are configs that work for me (my intials). 
-Just copy and rename to create your own. They are only ever passed to the `bash_data_generation.sh` and / or `bash_network_training.sh` scripts.
-All other scripts should be generic now.
+I will run through the examples. Just copy and rename to create your own. They are only ever passed to the `bash_data_generation.sh` and / or `bash_network_training.sh` scripts.
+All scripts should be generic now so one doesn't have to make changes to main code for running anything (situation previously).
 
-The basic logic for configs is this. We have one config file that concern *basic account settings*: `af_config_acct.sh`.
 
-For *data generation* we have one `.sh` config (`af_config_data_generation.sh`) and one `.yaml` config (`af_config_data_generation.yaml`):
+### `config`-logic
+
+The basic logic for configs is this. We have one config file that concern *basic account settings*: `config_acct.sh`.
+
+For *data generation* we have one `.sh` config (`config_data_generation.sh`) and one `.yaml` config (`config_data_generation.yaml`):
 
 1. The `.sh` config is very simple and just specifies the amount of array jobs you want to run. 
 2. The `.yaml` config provides a bunch of hyperparameters concerning a tranining data run.
 
-For *network training* likewise we have one `.sh` config (`af_config_network_training.sh`) and one `.yaml` config for a given network type:
+For *network training* likewise we have one `.sh` config (`config_network_training.sh`) and one `.yaml` config for a given network type:
 
-1. I provide one example for `cpn` networks (`af_config_network_training_cpn.yaml`) 
-2. One example  for `lan` networks (`af_config_network_training_lan.yaml`).
+1. I provide one example for **cpn** networks (`config_network_training_cpn.yaml`) 
+2. One example  for **lan** networks (`config_network_training_lan.yaml`).
 
 Again,
 1.  The `.sh` config provides some very basic settings
@@ -74,7 +76,7 @@ Again,
 ### workflow
 
 The repo is now organized so that there is a common body of code (which can be improved via PRs) and personal config files.
-I left example configs in the `user_configs` folder, but you can put your configs wherever you like. I was thinking about a workflow where you can create your own branch, add 
+I left example configs in the `user_configs_examples` folder, but you can put your configs wherever you like. I was thinking about a workflow where you can create your own branch, add 
 your own configs and otherwise keep pulling changes / improvements from the main branch as they come in.
 
 There are other ways and please leave suggestions if you have a better idea.
