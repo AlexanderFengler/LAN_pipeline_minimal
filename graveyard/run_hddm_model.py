@@ -79,8 +79,8 @@ def run_model(chain_idx,
     # LOAD NETWORK
     if not hddm_basic:
         network_config = pickle.load(open(run_config['lan_config_files'][model_idx], 'rb'))
-        network_path = run_config['lan_files'][model_idx]
-        network = hddm.torch.mlp_inference_class.LoadTorchMLPInfer(model_file_path = network_path,
+        networks_path = run_config['lan_files'][model_idx]
+        network = hddm.torch.mlp_inference_class.LoadTorchMLPInfer(model_file_path = networks_path,
                                                                    network_config = network_config,
                                                                    input_dim = len(model_config["params"]) + 2)
     

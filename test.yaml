@@ -1,0 +1,1 @@
+test: !!python/object/apply:eval [ 1 * 4 * 5]
