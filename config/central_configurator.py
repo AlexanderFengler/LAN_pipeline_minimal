@@ -70,7 +70,7 @@ def get_data_generator_config(yaml_config_path = None,
     
     training_data_folder = base_path + 'data/training_data/' + basic_config['GENERATOR_APPROACH'] + \
                             '/training_data_n_samples_' + \
-                                str(basic_config['N_SAMPLES']) + '/' + \
+                                str(basic_config['N_SAMPLES']) + '_dt_' + str(basic_config['DELTA_T']) + '/' + \
                                     str(basic_config['MODEL']) + '/'
            
     data_generator_arg_dict = {'output_folder': training_data_folder,
