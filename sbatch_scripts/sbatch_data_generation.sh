@@ -10,7 +10,7 @@
 ##SBATCH --account=your-condo
 
 # output file
-#SBATCH --output slurm/slurm_data_generator_%A_%a.out
+#SBATCH --output ../slurm/slurm_data_generator_%A_%a.out
 
 # Request runtime, memory, cores
 #SBATCH --time=48:00:00
@@ -62,5 +62,5 @@ conda deactivate
 conda deactivate
 conda activate $conda_env_name
 
-python -u scripts/data_generation_script.py --config_path $config_path \
+python -u ../scripts/data_generation_script.py --config_path $config_path \
                                             --data_gen_base_path $data_gen_base_path

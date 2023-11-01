@@ -69,7 +69,7 @@ while [ ! $# -eq 0 ]
 
 # Run with personal account
 if [ $also_use_base_acct ]; then
-    sbatch -p batch --array=0-$n_base_acct sbatch_scripts/sbatch_data_generation.sh \
+    sbatch -p batch --array=0-$n_base_acct ../sbatch_scripts/sbatch_data_generation.sh \
                     --config_path $yaml_config_data_gen \
                     --date_gen_base_path $project_folder \
                     --bashrc_path $bashrc_path \
@@ -77,7 +77,7 @@ if [ $also_use_base_acct ]; then
 fi 
 
 # Run with frankmj account
-sbatch -p batch --account=$oscar_acct --array=0-$n_oscar_acct sbatch_scripts/sbatch_data_generation.sh \
+sbatch -p batch --account=$oscar_acct --array=0-$n_oscar_acct ../sbatch_scripts/sbatch_data_generation.sh \
                     --config_path $yaml_config_data_gen \
                     --data_gen_base_path $project_folder \
                     --bashrc_path $bashrc_path \

@@ -57,7 +57,7 @@ echo $networks_path_base
 if [ "$partition" == "gpu" ]; then
     sbatch -p gpu --gres=gpu:1 \
                   --account=$oscar_acct \
-                  --array=0-$n_networks sbatch_scripts/sbatch_network_training.sh \
+                  --array=0-$n_networks ../sbatch_scripts/sbatch_network_training.sh \
                   --backend $backend \
                   --config_path $yaml_config_network \
                   --networks_path_base $networks_path_base \
@@ -66,7 +66,7 @@ if [ "$partition" == "gpu" ]; then
                   --bashrc_path $bashrc_path | cut -f 4 -d' '
 elif [ "$partition" == "cpu" ]; then
     sbatch -p batch --account=$oscar_acct  \
-                    --array=0-$n_networks sbatch_scripts/sbatch_network_training.sh \
+                    --array=0-$n_networks ../sbatch_scripts/sbatch_network_training.sh \
                     --backend $backend \
                     --config_path $yaml_config_network \
                     --networks_path_base $networks_path_base \
