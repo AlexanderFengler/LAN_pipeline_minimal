@@ -7,17 +7,20 @@ N_EPOCHS: 50
 TRAINING_DATA_FOLDER: "data/training_data/lan/training_data_n_samples_20000/ddm"
 MODEL: "ddm"
 SHUFFLE: True
-LAYER_SIZES: [[100, 100, 100, 1], [100, 100, 100, 100, 1], [100, 100, 100, 100, 100, 1],
-              [120, 120, 120, 1], [120, 120, 120, 120, 1], [120, 120, 120, 120, 120, 1]]
-ACTIVATIONS: [['tanh', 'tanh', 'tanh'], 
-              ['tanh', 'tanh', 'tanh', 'tanh'], 
-              ['tanh', 'tanh', 'tanh', 'tanh', 'tanh'],
-              ['tanh', 'tanh', 'tanh'], 
-              ['tanh', 'tanh', 'tanh', 'tanh'], 
-              ['tanh', 'tanh', 'tanh', 'tanh', 'tanh']]
+# LAYER_SIZES: [[100, 100, 100, 1], [100, 100, 100, 100, 1], [100, 100, 100, 100, 100, 1],
+#               [120, 120, 120, 1], [120, 120, 120, 120, 1], [120, 120, 120, 120, 120, 1]]
+# ACTIVATIONS: [['tanh', 'tanh', 'tanh'], 
+#               ['tanh', 'tanh', 'tanh', 'tanh'], 
+#               ['tanh', 'tanh', 'tanh', 'tanh', 'tanh'],
+#               ['tanh', 'tanh', 'tanh'], 
+#               ['tanh', 'tanh', 'tanh', 'tanh'], 
+#               ['tanh', 'tanh', 'tanh', 'tanh', 'tanh']]
+LAYER_SIZES: [[100, 100, 100, 1]]
+ACTIVATIONS: [['tanh', 'tanh', 'tanh']]
 WEIGHT_DECAY: 0.0
 TRAIN_VAL_SPLIT: 0.98
-N_TRAINING_FILES: 10000 # can be list
+# N_TRAINING_FILES: 10000 # can be list
+N_TRAINING_FILES: 5000
 LABELS_LOWER_BOUND: np.log(1e-7)
 LEARNING_RATE: 0.001
 LR_SCHEDULER: 'reduce_on_plateau'

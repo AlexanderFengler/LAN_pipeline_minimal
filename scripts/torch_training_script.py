@@ -184,6 +184,6 @@ if __name__ == "__main__":
                                         output_folder = networks_path,
                                         output_file_id = extra_config['model'],
                                         run_id = run_id,
-                                        wandb_on = True,
+                                        wandb_on = False,
                                         wandb_project_id = wandb_project_id,
                                         save_all = True)

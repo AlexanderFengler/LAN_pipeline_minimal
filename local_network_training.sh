@@ -14,7 +14,7 @@ data_gen_n_samples_per_sim=20000
 # How many parameter sets do we request ? 
 data_gen_n_parameter_sets=1000
 # How many training examples do we harvest from a given parameter set
-data_gen_n_training_examples_per_parameter_set=2000
+data_gen_n_training_examples    _per_parameter_set=2000
 
 # GENERATE PATHS BY PATTERN 
 project_folder='/users/afengler/data/proj_lan_pipeline/LAN_scripts/'
