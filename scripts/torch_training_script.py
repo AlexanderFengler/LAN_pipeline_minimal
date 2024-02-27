@@ -152,7 +152,8 @@ if __name__ == "__main__":
     
     # Load network
     net = lanfactory.trainers.TorchMLP(network_config = deepcopy(network_config),
-                                       input_shape = train_dataset.input_dim)
+                                       input_shape = train_dataset.input_dim,
+                                       network_type = network_config['network_type'])
  
     # run_id
     run_id = uuid.uuid1().hex
@@ -162,12 +163,12 @@ if __name__ == "__main__":
     
     # save network config for this run
     networks_path = args.networks_path_base + '/' + net.network_type + '/' + extra_config['model']
+    file_name_suffix = '/' + run_id + '_' + net.network_type + "_" + extra_config['model'] + \
+                        '_' + 'network_config.pickle'
     
     try_gen_folder(folder = networks_path,
                    allow_abs_path_folder_generation = True)
-    pickle.dump(network_config, open(networks_path + '/' + run_id + '_' + \
-                                     net.network_type + "_" + extra_config['model'] + \
-                                     '_' + '_network_config.pickle', 'wb'))
+    pickle.dump(network_config, open(networks_path + file_name_suffix, 'wb'))
     
     # Load model trainer
     model_trainer = lanfactory.trainers.ModelTrainerTorchMLP(train_config = deepcopy(train_config),
@@ -181,9 +182,9 @@ if __name__ == "__main__":
 
     # Train model
     model_trainer.train_and_evaluate(save_history = train_config['save_history'],
-                                        output_folder = networks_path,
-                                        output_file_id = extra_config['model'],
-                                        run_id = run_id,
-                                        wandb_on = True,
-                                        wandb_project_id = wandb_project_id,
-                                        save_all = True)
+                                     output_folder = networks_path,
+                                     output_file_id = extra_config['model'],
+                                     run_id = run_id,
+                                     wandb_on = True,
+                                     wandb_project_id = wandb_project_id,
+                                     save_all = True)

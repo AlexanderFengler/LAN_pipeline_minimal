@@ -5,9 +5,9 @@ source ~/.bashrc
 
 conda deactivate 
 conda deactivate
-conda remove -n lan-pipeline-test --all
-mamba create -n lan-pipeline-test python=3.11
-conda activate lan-pipeline-test
+conda remove -n lan-pipeline --all
+mamba create -n lan-pipeline python=3.11
+conda activate lan-pipeline
 
 pip install --upgrade pip
 pip install --upgrade "jax[cuda11_pip]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
@@ -18,5 +18,6 @@ pip install jupyter
 pip install frozendict
 pip install pyyaml
 pip install wandb
+pip install onnx
 
 python -m ipykernel install --user --name=lan-pipeline-test
