@@ -4,7 +4,7 @@
 # Then have a meta python script that runs the correct training script, based on configurations
 
 # Network training configs -----------
-backend="jax" # jax, torch
+backend="torch" # jax, torch
 partition="gpu" # gpu, cpu
 dl_workers=2 # number of processes to use for data-loading
 n_networks=6

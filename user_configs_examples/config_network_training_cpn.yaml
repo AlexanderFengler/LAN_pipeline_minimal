@@ -17,7 +17,7 @@ ACTIVATIONS: [['tanh', 'tanh', 'tanh'],
               ['tanh', 'tanh', 'tanh', 'tanh', 'tanh']]
 WEIGHT_DECAY: 0.0
 TRAIN_VAL_SPLIT: 0.98
-N_TRAINING_FILES: 10000 # can be list
+N_TRAINING_FILES: 10000
 LABELS_LOWER_BOUND: np.log(1e-7)
 LEARNING_RATE: 0.001
 LR_SCHEDULER: 'reduce_on_plateau'
