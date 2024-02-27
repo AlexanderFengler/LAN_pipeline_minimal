@@ -31,7 +31,7 @@ network_id=None
 config_file=None
 conda_env_name=lan_pipe
 bashrc_path=/users/afengler/.bashrc
-data_gen_base_path=/users/afengler/data/proj_lan_pipeline_minimal
+data_gen_base_path=/users/afengler/data/proj_lan_pipeline_minimal/LAN_pipeline_minimal/
 
 while [ ! $# -eq 0 ]
     do

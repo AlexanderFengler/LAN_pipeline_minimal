@@ -151,6 +151,8 @@ def get_train_network_config(yaml_config_path = None,
     # to log-probabilities when running the model in evaluation / inference mode 
     train_output_type_dict = {'lan': 'logprob',
                               'cpn': 'logits',
+                              'opn': 'logits',
+                              'gonogo': 'logits',
                               'cpn_bce': 'prob'}
 
     # Last layer activation depending on train output type
@@ -168,11 +170,15 @@ def get_train_network_config(yaml_config_path = None,
                        'prob': 'bce'
                        }
 
-    data_key_dict = {'lan': {'features_key': 'data', 
-                             'label_key': 'labels'},
-                     'cpn': {'features_key': 'thetas',
-                             'label_key': 'choice_p'}
-                    }
+    data_key_dict = {'lan': {'features_key': 'lan_data', 
+                             'label_key': 'lan_labels'},
+                     'cpn': {'features_key': 'cpn_data',
+                             'label_key': 'cpn_labels'},
+                     'opn': {'features_key': 'opn_data',
+                             'label_key': 'opn_labels'},
+                     'gonogo': {'features_key': 'gonogo_data',
+                               'label_key': 'gonogo_labels'},
+                     }
 
     # Network architectures
     layer_sizes = basic_config['LAYER_SIZES'][net_index]

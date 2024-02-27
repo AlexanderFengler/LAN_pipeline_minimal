@@ -8,6 +8,7 @@ users/
 user_configs_af/
 user_configs_jl/
 user_configs_av/
+notebooks/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
