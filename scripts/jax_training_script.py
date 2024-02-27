@@ -179,7 +179,7 @@ if __name__ == "__main__":
                    allow_abs_path_folder_generation = True)
     pickle.dump(network_config, open(networks_path + '/' + run_id + '_' + \
                                      network_config['network_type'] + "_" + extra_config['model'] + \
-                                     '_' + '_network_config.pickle', 'wb'))
+                                     '_' + 'network_config.pickle', 'wb'))
             
     # Train model
     model_trainer.train_and_evaluate(save_history = train_config['save_history'],

@@ -28,11 +28,11 @@ def make_data_generator_configs(model = 'ddm',
                                 save_folder = ''):
     
     # Load copy of the respective model's config dict from ssms
-    model_config = deepcopy(ssms.config.model_config[model])
+    model_config = deepcopy(ssms.config.model_config[model.split('_deadline')[0]])
     
     # Load copy of the respective data_generator_config dicts 
     data_config = deepcopy(ssms.config.data_generator_config[generator_approach])
-    data_config['dgp_list'] = model
+    data_config['model'] = model
     
     for key, val in data_generator_arg_dict.items():
         data_config[key] = val
@@ -74,7 +74,7 @@ def get_data_generator_config(yaml_config_path = None,
                                     str(basic_config['MODEL']) + '/'
            
     data_generator_arg_dict = {'output_folder': training_data_folder,
-                               'dgp_list': basic_config['MODEL'],
+                               'model': basic_config['MODEL'],
                                'n_samples': basic_config['N_SAMPLES'],
                                'n_parameter_sets': basic_config['N_PARAMETER_SETS'],
                                'delta_t': basic_config['DELTA_T'],
@@ -151,6 +151,8 @@ def get_train_network_config(yaml_config_path = None,
     # to log-probabilities when running the model in evaluation / inference mode 
     train_output_type_dict = {'lan': 'logprob',
                               'cpn': 'logits',
+                              'opn': 'logits',
+                              'gonogo': 'logits',
                               'cpn_bce': 'prob'}
 
     # Last layer activation depending on train output type
@@ -168,11 +170,15 @@ def get_train_network_config(yaml_config_path = None,
                        'prob': 'bce'
                        }
 
-    data_key_dict = {'lan': {'features_key': 'data', 
-                             'label_key': 'labels'},
-                     'cpn': {'features_key': 'thetas',
-                             'label_key': 'choice_p'}
-                    }
+    data_key_dict = {'lan': {'features_key': 'lan_data', 
+                             'label_key': 'lan_labels'},
+                     'cpn': {'features_key': 'cpn_data',
+                             'label_key': 'cpn_labels'},
+                     'opn': {'features_key': 'opn_data',
+                             'label_key': 'opn_labels'},
+                     'gonogo': {'features_key': 'gonogo_data',
+                               'label_key': 'gonogo_labels'},
+                     }
 
     # Network architectures
     layer_sizes = basic_config['LAYER_SIZES'][net_index]

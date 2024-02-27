@@ -50,7 +50,7 @@ let n_networks--
 networks_path_base=$project_folder'/data/networks/'$backend
 
 echo 'Config file passed to sbatch_network_training.sh'
-echo $network_training_yaml
+echo $yaml_config_network
 echo $networks_path_base
 
 # Train networks ----
