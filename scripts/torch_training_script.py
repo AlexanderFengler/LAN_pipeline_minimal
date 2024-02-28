@@ -89,7 +89,10 @@ if __name__ == "__main__":
     
     print('CONFIG DICT')
     print(config_dict)
-    
+
+    print('TRAINING DATA FOLDER')
+    print(config_dict['config_dict']['training_data_folder'])
+
     file_list = os.listdir(config_dict['config_dict']['training_data_folder'])
     valid_file_list = np.array([config_dict['config_dict']['training_data_folder'] + '/' + \
                          file_ for file_ in file_list])
@@ -163,8 +166,8 @@ if __name__ == "__main__":
     
     # save network config for this run
     networks_path = args.networks_path_base + '/' + net.network_type + '/' + extra_config['model']
-    file_name_suffix = '/' + run_id + '_' + net.network_type + "_" + extra_config['model'] + \
-                        '_' + 'network_config.pickle'
+    file_name_suffix = '/' + extra_config['model'] + "_" + net.network_type + "_" + \
+                            run_id + "_" + 'network_config.pickle'
     
     try_gen_folder(folder = networks_path,
                    allow_abs_path_folder_generation = True)
