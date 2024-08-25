@@ -19,5 +19,6 @@ pip install frozendict
 pip install pyyaml
 pip install wandb
 pip install onnx
+pip install matplotlib
 
 python -m ipykernel install --user --name=lan-pipeline-test
