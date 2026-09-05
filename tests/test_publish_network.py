@@ -235,6 +235,24 @@ class TestStaging:
         with pytest.raises(PublishError, match="is a directory"):
             stage_artifacts(source, "a" * 32, staged)
 
+    def test_a_symlink_squatting_on_a_sidecar_name_is_refused(self, tmp_path):
+        # copy2() follows a symlink destination and overwrites whatever it
+        # points at -- for a reused --staging-dir that can be a file outside
+        # the staging area entirely. Refused, and the target stays untouched.
+        source = tmp_path / "src"
+        self.make_run(source, "a" * 32)
+        (source / "model_card.yaml").write_text("title: new (LAN)\n")
+        outside = tmp_path / "precious.yaml"
+        outside.write_text("do not touch")
+        staged = tmp_path / "staged"
+        staged.mkdir()
+        (staged / "model_card.yaml").symlink_to(outside)
+
+        with pytest.raises(PublishError, match="is a symlink"):
+            stage_artifacts(source, "a" * 32, staged)
+
+        assert outside.read_text() == "do not touch"
+
     def test_a_successful_publish_does_not_poison_its_staging_directory(self, tmp_path):
         # lanfactory renders the card and README into the staging dir during
         # upload. Treating those as foreign leftovers made the identical

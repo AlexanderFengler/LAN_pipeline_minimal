@@ -259,14 +259,19 @@ def stage_artifacts(source: Path, run_uuid: str, destination: Path) -> Path:
     # step exists to prevent -- shipping evidence that belongs to another run.
     for name in SIDECAR_FILES:
         staged = destination / name
-        if staged.is_dir():
+        if staged.is_symlink() or staged.is_dir():
             # Guarding both branches at once: unlink() raises on a directory
             # regardless of missing_ok, and copy2() onto one silently copies
             # INTO it -- producing model_card.yaml/model_card.yaml that the
-            # upload would then miss. Either way the operator put it there,
-            # so the operator removes it.
+            # upload would then miss. A symlink is worse: copy2() follows it
+            # and overwrites whatever it points at, which for a reused
+            # --staging-dir can be a file outside the staging area entirely.
+            # Either way the operator put it there, so the operator removes
+            # it. Symlink first: a link to a directory passes is_dir() too,
+            # and the message should name what is actually on disk.
+            kind = "symlink" if staged.is_symlink() else "directory"
             raise PublishError(
-                f"{staged} is a directory, not a staged sidecar. "
+                f"{staged} is a {kind}, not a staged sidecar. "
                 "Remove it or pass a different --staging-dir."
             )
         sidecar = source / name
