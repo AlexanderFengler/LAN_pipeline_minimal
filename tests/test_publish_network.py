@@ -177,12 +177,16 @@ class TestStaging:
         # only the evidence that could not have caught the problem.
         source = tmp_path / "src"
         self.make_run(source, "a" * 32)
-        (source / "recovery_report.json").write_text('{"passed": false}')
+        (source / "recovery_report.json").write_text(
+            self.report_for(next(source.glob("*.onnx")).name)
+        )
         staged = tmp_path / "staged"
 
         stage_artifacts(source, "a" * 32, staged)
 
-        assert (staged / "recovery_report.json").read_text() == '{"passed": false}'
+        assert (staged / "recovery_report.json").read_text() == (
+            source / "recovery_report.json"
+        ).read_text()
 
     def test_a_staged_recovery_report_is_not_a_foreign_leftover(self, tmp_path):
         # It is copied from the source folder, so re-running the identical
@@ -190,7 +194,9 @@ class TestStaging:
         # unrepeatable, the same way the card once did.
         source = tmp_path / "src"
         self.make_run(source, "a" * 32)
-        (source / "recovery_report.json").write_text('{"passed": false}')
+        (source / "recovery_report.json").write_text(
+            self.report_for(next(source.glob("*.onnx")).name)
+        )
         staged = tmp_path / "staged"
         stage_artifacts(source, "a" * 32, staged)
 
@@ -212,7 +218,9 @@ class TestStaging:
         # prevent.
         source = tmp_path / "src"
         self.make_run(source, "a" * 32)
-        (source / "recovery_report.json").write_text('{"passed": true}')
+        (source / "recovery_report.json").write_text(
+            self.report_for(next(source.glob("*.onnx")).name)
+        )
         staged = tmp_path / "staged"
 
         stage_artifacts(source, "a" * 32, staged)
@@ -252,6 +260,43 @@ class TestStaging:
             stage_artifacts(source, "a" * 32, staged)
 
         assert outside.read_text() == "do not touch"
+
+    def report_for(self, *onnx_names):
+        import json
+
+        return json.dumps({"passed": True, "onnx_files": list(onnx_names)})
+
+    def test_a_report_naming_the_staged_onnx_is_accepted(self, tmp_path):
+        source = tmp_path / "src"
+        self.make_run(source, "a" * 32)
+        onnx_name = next(source.glob("*.onnx")).name
+        (source / "recovery_report.json").write_text(self.report_for(onnx_name))
+
+        assert stage_artifacts(source, "a" * 32, tmp_path / "staged").exists()
+
+    def test_a_report_for_another_run_is_refused(self, tmp_path):
+        # The exact hazard: two runs' artifacts share the source directory,
+        # the ONNX is selected by run_uuid, the report by fixed name. Without
+        # the binding, --run-id ships one run's network with the other run's
+        # verdict.
+        source = tmp_path / "src"
+        self.make_run(source, "a" * 32)
+        (source / "recovery_report.json").write_text(
+            self.report_for("model_lan_bbbb_model.onnx")
+        )
+
+        with pytest.raises(PublishError, match="belongs to another run"):
+            stage_artifacts(source, "a" * 32, tmp_path / "staged")
+
+    def test_an_unbound_report_is_refused(self, tmp_path):
+        # A report from before the binding existed cannot prove anything
+        # about the network beside it; re-aggregating is cheap.
+        source = tmp_path / "src"
+        self.make_run(source, "a" * 32)
+        (source / "recovery_report.json").write_text('{"passed": true}')
+
+        with pytest.raises(PublishError, match="does not say which network"):
+            stage_artifacts(source, "a" * 32, tmp_path / "staged")
 
     def test_a_successful_publish_does_not_poison_its_staging_directory(self, tmp_path):
         # lanfactory renders the card and README into the staging dir during

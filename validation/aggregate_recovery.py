@@ -780,6 +780,13 @@ def main(
         "passed": passed,
         "failures": failures,
         "unidentified": unidentified,
+        # The networks these shards actually fit, by artifact filename. The
+        # report is otherwise unattributable -- it carries arm labels, which
+        # are operator-chosen strings -- and the publish step refuses to ship
+        # a report that does not name the ONNX travelling beside it.
+        "onnx_files": sorted(
+            {Path(sh["onnx"]).name for sh in shards if sh.get("onnx")}
+        ),
         **summary,
     }
 

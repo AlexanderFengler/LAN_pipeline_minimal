@@ -286,6 +286,32 @@ def stage_artifacts(source: Path, run_uuid: str, destination: Path) -> Path:
             f"Expected exactly one .onnx among the {len(matches)} staged "
             f"artifacts, found {len(onnx)}: {[p.name for p in onnx]}"
         )
+
+    # The report is selected by fixed filename from a directory that can hold
+    # several runs' artifacts, while the ONNX is selected by run_uuid -- so
+    # without this check an explicit --run-id publishes one run's network
+    # with another run's recovery verdict. The aggregator records which ONNX
+    # files its shards fit; the one travelling beside the report must be
+    # among them.
+    report_path = destination / RECOVERY_REPORT
+    if report_path.is_file():
+        try:
+            judged = json.loads(report_path.read_text()).get("onnx_files")
+        except json.JSONDecodeError as e:
+            raise PublishError(f"{report_path} is not valid JSON: {e}") from e
+        if not judged:
+            raise PublishError(
+                f"{report_path} does not say which network it judged (no "
+                "onnx_files). Re-run validation/aggregate_recovery.py over "
+                "this run's shards so the report is bound to its network."
+            )
+        if onnx[0].name not in judged:
+            raise PublishError(
+                f"{report_path} judges {judged}, not the staged "
+                f"{onnx[0].name}. It belongs to another run -- aggregate "
+                "this run's shards instead."
+            )
+
     logger.info(f"Staged {len(matches)} artifacts to {destination}")
     return onnx[0]
 

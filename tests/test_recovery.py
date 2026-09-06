@@ -1090,6 +1090,29 @@ class TestAnUnidentifiedCellSaysSo:
         assert not passed
         assert any(dead_design in f and "8 errored" in f for f in failures)
 
+    def test_the_report_names_the_networks_its_shards_fit(self, tmp_path):
+        # The report is otherwise unattributable: arm labels are operator-
+        # chosen strings, and the publish step needs to refuse shipping a
+        # report beside an ONNX it never judged.
+        import json
+
+        shards = self._fits(12, label="v", **self.HEALTHY)
+        for sh in shards:
+            sh["onnx"] = "/anywhere/model_lan_abc123_model.onnx"
+        shards += self._fits(2, label="v", **self.HEALTHY)  # analytical: no onnx
+        shard_dir = tmp_path / "shards"
+        shard_dir.mkdir()
+        for i, sh in enumerate(shards):
+            (shard_dir / f"recovery_x_{i}.json").write_text(json.dumps(sh))
+
+        from typer.testing import CliRunner
+
+        out = tmp_path / "report.json"
+        CliRunner().invoke(agg.app, ["--shard-dir", str(shard_dir), "--out", str(out)])
+
+        report = json.loads(out.read_text())
+        assert report["onnx_files"] == ["model_lan_abc123_model.onnx"]
+
     def test_ordinary_non_convergence_still_fails(self):
         # Nothing at the prior: the sampler really is in trouble, and the cell
         # must keep saying so rather than being excused. Paired with a judged
