@@ -1108,7 +1108,10 @@ class TestAnUnidentifiedCellSaysSo:
         from typer.testing import CliRunner
 
         out = tmp_path / "report.json"
-        CliRunner().invoke(agg.app, ["--shard-dir", str(shard_dir), "--out", str(out)])
+        result = CliRunner().invoke(
+            agg.app, ["--shard-dir", str(shard_dir), "--out", str(out)]
+        )
+        assert result.exit_code == 0, result.output
 
         report = json.loads(out.read_text())
         assert report["onnx_files"] == ["model_lan_abc123_model.onnx"]

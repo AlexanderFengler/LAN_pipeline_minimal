@@ -298,6 +298,32 @@ class TestStaging:
         with pytest.raises(PublishError, match="does not say which network"):
             stage_artifacts(source, "a" * 32, tmp_path / "staged")
 
+    def test_a_string_onnx_files_cannot_substring_match(self, tmp_path):
+        # `in` on a string is substring search: a report whose onnx_files is
+        # one long string containing the staged name would false-ACCEPT. Only
+        # a list makes membership mean membership.
+        import json
+
+        source = tmp_path / "src"
+        self.make_run(source, "a" * 32)
+        onnx_name = next(source.glob("*.onnx")).name
+        (source / "recovery_report.json").write_text(
+            json.dumps({"passed": True, "onnx_files": f"prefix_{onnx_name}"})
+        )
+
+        with pytest.raises(PublishError, match="not a list"):
+            stage_artifacts(source, "a" * 32, tmp_path / "staged")
+
+    def test_a_report_that_is_not_an_object_is_refused(self, tmp_path):
+        # Valid JSON, wrong shape: .get on a list is an AttributeError
+        # traceback, not a refusal, without the isinstance guard.
+        source = tmp_path / "src"
+        self.make_run(source, "a" * 32)
+        (source / "recovery_report.json").write_text('["not", "an", "object"]')
+
+        with pytest.raises(PublishError, match="does not say which network"):
+            stage_artifacts(source, "a" * 32, tmp_path / "staged")
+
     def test_a_successful_publish_does_not_poison_its_staging_directory(self, tmp_path):
         # lanfactory renders the card and README into the staging dir during
         # upload. Treating those as foreign leftovers made the identical

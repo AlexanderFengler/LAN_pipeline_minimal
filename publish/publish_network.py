@@ -296,14 +296,20 @@ def stage_artifacts(source: Path, run_uuid: str, destination: Path) -> Path:
     report_path = destination / RECOVERY_REPORT
     if report_path.is_file():
         try:
-            judged = json.loads(report_path.read_text()).get("onnx_files")
+            report = json.loads(report_path.read_text())
         except json.JSONDecodeError as e:
             raise PublishError(f"{report_path} is not valid JSON: {e}") from e
-        if not judged:
+        judged = report.get("onnx_files") if isinstance(report, dict) else None
+        # The shape checks are load-bearing, not defensive fluff: a string
+        # here would turn the membership test below into substring matching,
+        # which can false-ACCEPT -- "..._model.onnx" is a substring of a
+        # longer artifact name. Only a list makes `in` mean what it says.
+        if not isinstance(judged, list) or not judged:
             raise PublishError(
-                f"{report_path} does not say which network it judged (no "
-                "onnx_files). Re-run validation/aggregate_recovery.py over "
-                "this run's shards so the report is bound to its network."
+                f"{report_path} does not say which network it judged "
+                "(onnx_files missing, empty, or not a list). Re-run "
+                "validation/aggregate_recovery.py over this run's shards so "
+                "the report is bound to its network."
             )
         if onnx[0].name not in judged:
             raise PublishError(
