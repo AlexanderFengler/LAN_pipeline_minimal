@@ -70,7 +70,7 @@ def aux_report(network_type="cpn", model="ddm_sdv"):
         "onnx": f"/staged/{model}_{network_type}.onnx",
         "model": model,
         "network_type": network_type,
-        "aux_category": "choice" if network_type == "cpn" else "deadline",
+        "aux_category": "choice" if network_type == "cpn" else "omission",
         "passed": True,
         "gates": [
             {"gate": "structure", "passed": True, "input_width": 6},
@@ -1231,12 +1231,12 @@ class TestAuxiliaryPublish:
         assert publish.data.tags["data_origin"] == "derived"
         assert client.get_run(run_id).data.tags["published"] == "true"
 
-    def test_an_opn_is_validated_without_a_category_and_paired_with_its_lan(
+    def test_an_opn_is_validated_with_its_provenance_category_and_its_lan(
         self, tmp_path, store, stubs
     ):
-        # The validator names the trailing input (deadline), the provenance
-        # names the probability (omission); the validator's default is the
-        # only sensible value and it must not be handed the other vocabulary.
+        # Provenance and validator share the output vocabulary, so the
+        # provenance's "omission" is handed straight through for an opn too:
+        # the validator then refuses a mislabelled run on its own.
         run_id = store(self.params("opn"), self.TAGS)
         source = self.artifacts(tmp_path, "opn")
         lan = tmp_path / "ddm_sdv.onnx"
@@ -1251,7 +1251,7 @@ class TestAuxiliaryPublish:
         assert result["root_filename"] == "ddm_sdv_opn.onnx"
         assert result["published"] is False
         (validate,) = stubs["validate"]
-        assert validate["aux_category"] is None
+        assert validate["aux_category"] == "omission"
         assert validate["lan_onnx"] == lan
         assert validate["skip_accuracy"] is True
 

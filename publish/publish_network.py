@@ -1071,14 +1071,10 @@ def run_publish(
                 model_name=model,
                 network_type=network_type,
                 skip_density=skip_density,
-                # The validator names what the trailing input IS (a cpn's
-                # choice); the provenance names what the output is the
-                # probability OF (an opn's omission). They agree for a cpn,
-                # and an opn's trailing input has one possibility the
-                # validator defaults to.
-                aux_category=provenance.get("aux_category")
-                if network_type == "cpn"
-                else None,
+                # Provenance and validator share one vocabulary (what the
+                # output is the probability of), so the validator's own check
+                # agrees with aux_provenance's by construction.
+                aux_category=provenance.get("aux_category"),
                 lan_onnx=lan_onnx,
                 skip_accuracy=skip_accuracy,
             )
