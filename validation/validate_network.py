@@ -164,7 +164,9 @@ def _result(name: str, passed: bool, **details: Any) -> dict:
     return {"gate": name, "passed": bool(passed), **details}
 
 
-def _draw_theta(model_config: dict, rng: np.random.Generator, shrink: float = 0.0):
+def _draw_theta(
+    model_config: dict, rng: np.random.Generator, shrink: float = 0.0
+) -> np.ndarray:
     """One uniform parameter draw from the training box shrunk by ``shrink``.
 
     ``shrink`` is the fraction cut from each side: 0.0 is the full box, 0.1
@@ -577,13 +579,20 @@ def _hssm_version_supports_cpn_response() -> tuple[bool, str]:
 
     Read from package metadata rather than ``hssm.__version__`` so the check
     costs nothing: it decides whether to import the inference stack at all.
+    Raises ``importlib.metadata.PackageNotFoundError`` when hssm is absent.
+
+    numpy's version parser is used because numpy is already a module-level
+    import here; ``packaging`` is only in the tree transitively, and this
+    repo does not rely on transitive dependencies. Pre-releases compare below
+    their final version, so ``0.6.0rc1`` does not count as ``0.6.0``.
     """
     from importlib.metadata import version
 
-    from packaging.version import Version
+    from numpy.lib import NumpyVersion
 
     installed = version("hssm")
-    return Version(installed) >= Version(HSSM_CPN_RESPONSE_MIN_VERSION), installed
+    supported = NumpyVersion(installed) >= NumpyVersion(HSSM_CPN_RESPONSE_MIN_VERSION)
+    return bool(supported), installed
 
 
 def gate_hssm_missing_load(
@@ -605,20 +614,26 @@ def gate_hssm_missing_load(
 
     The base LAN is resolved by name through HSSM (a download for registry
     models) unless ``lan_onnx`` points at one; models outside HSSM's registry
-    need it, since there is nothing to download.
+    need it, since there is nothing to download. Either way the pairing is
+    LAN + auxiliary net: ``loglik_kind`` is always ``approx_differentiable``,
+    because for ddm-family models HSSM would otherwise default to its
+    analytical likelihood and the jax assembly users actually hit would never
+    be exercised.
     """
-    if network_type == "cpn":
-        supported, installed = _hssm_version_supports_cpn_response()
-        if not supported:
-            return _result(
-                "hssm_missing_load",
-                True,
-                skipped=True,
-                reason=HSSM_CPN_SKIP_REASON,
-                hssm_version=installed,
-            )
+    from importlib.metadata import PackageNotFoundError
 
     try:
+        if network_type == "cpn":
+            supported, installed = _hssm_version_supports_cpn_response()
+            if not supported:
+                return _result(
+                    "hssm_missing_load",
+                    True,
+                    skipped=True,
+                    reason=HSSM_CPN_SKIP_REASON,
+                    hssm_version=installed,
+                )
+
         import hssm
         import pandas as pd
         import ssms
@@ -631,11 +646,11 @@ def gate_hssm_missing_load(
         hssm_kwargs: dict[str, Any] = {
             "missing_data": True,
             "loglik_missing_data": str(onnx_path),
+            "loglik_kind": "approx_differentiable",
             **_hssm_model_kwargs(model_name, model_config),
         }
         if lan_onnx is not None:
             hssm_kwargs["loglik"] = str(lan_onnx)
-            hssm_kwargs["loglik_kind"] = "approx_differentiable"
         elif "model_config" in hssm_kwargs:
             return _result(
                 "hssm_missing_load",
@@ -676,6 +691,12 @@ def gate_hssm_missing_load(
             initial_logp[str(p_outlier)] = float(
                 pymc_model.compile_logp()(pymc_model.initial_point())
             )
+    except PackageNotFoundError:
+        return _result(
+            "hssm_missing_load",
+            False,
+            error="hssm is not installed; install the validate dependency group",
+        )
     except Exception as e:  # noqa: BLE001
         return _result("hssm_missing_load", False, error=f"{type(e).__name__}: {e}")
 
