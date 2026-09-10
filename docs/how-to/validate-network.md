@@ -89,7 +89,15 @@ resolved value as top-level `aux_category`.
 
 A3 resolves the base LAN by model name through HSSM, which downloads it for
 registry models. Pass `--lan-onnx` to use a local LAN instead; models outside
-HSSM's registry require it.
+HSSM's registry require it. Either way the assembly is LAN + auxiliary net
+(`loglik_kind="approx_differentiable"`), never HSSM's analytical likelihood.
+
+!!! warning "Auxiliary reports do not promote yet"
+
+    The publisher still requires the LAN gate set and does not pass
+    `--aux-category`, so it refuses every auxiliary report, and
+    `lan-publish --network-type cpn` cannot validate a cpn at all. Use this
+    command to validate an auxiliary artifact; publishing it is a follow-up.
 
 Two skips are built in and reported rather than silent:
 

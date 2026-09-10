@@ -89,19 +89,31 @@ after `structure` and `parity`:
 
 A gonogo network always reports `hssm_missing_load` and `accuracy` as
 `skipped` (HSSM has no gonogo consumer). A cpn reports `hssm_missing_load` as
-`skipped` under HSSM < 0.6.0, whose missing-data path ignores `response`.
+`skipped` under HSSM < 0.6.0, whose missing-data path ignores `response`; that
+skip records the `hssm_version` it saw.
+
+Auxiliary reports are validator-only for now. The publisher still requires the
+LAN gate set (`structure`, `hssm_load`, `density`) and does not pass
+`--aux-category`, so it refuses every cpn/opn/gonogo report and cannot yet
+validate a cpn at all. Teaching it the auxiliary gate set is a separate change.
 
 The detailed report has `schema_version: 1`, artifact/model/network identity
 (`onnx`, `model`, `network_type`, and `aux_category` — `null` for a LAN,
 `choice` for a cpn, `deadline` for an opn or gonogo), aggregate `passed`, and a
 `gates` list whose entries include thresholds, scores, errors, or skip reasons
-as applicable. In the auxiliary gates, `hssm_missing_load` records
-`initial_logp_by_p_outlier` (keys `"0.0"` and `"0.05"`), `n_trials`,
-`n_missing`, and the `lan` it was assembled with; `accuracy` records
-`mean_abs_error`, `max_abs_error`, the two thresholds it was judged against, and
-one `draws` entry per parameter draw with `theta`, the `choice` or `deadline`
-fed to the network, `network_logp`, `network_value`, `truth`, `truth_mc_se`,
-`abs_error`, and for a cpn `truth_rt_lt_max_t`.
+as applicable. Adding a nullable top-level key does not bump `schema_version`;
+the gate set a report carries is keyed on `network_type`, not on the version,
+so a consumer that reads gates by name must look at `network_type` first.
+
+In the auxiliary gates, `hssm_missing_load` records `initial_logp_by_p_outlier`
+(keys `"0.0"` and `"0.05"`), `n_trials`, `n_missing`, and the `lan` it was
+assembled with; `accuracy` records `mean_abs_error`, `max_abs_error`, the two
+thresholds it was judged against, `n_param_draws`, `n_sim`, and one `draws`
+entry per parameter draw with `theta`, the `choice` or `deadline` fed to the
+network, `network_logp`, `network_value`, `truth`, `truth_mc_se`, `abs_error`,
+and for a cpn `truth_rt_lt_max_t`. When an output is not a log-probability the
+gate fails at once with `error`, the index `draw`, and that draw's `theta` and
+`choice`/`deadline` in place of the `draws` list.
 
 ## Parameter-recovery shard
 
