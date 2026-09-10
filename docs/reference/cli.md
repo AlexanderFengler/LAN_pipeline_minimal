@@ -83,7 +83,7 @@ uv run python validation/validate_network.py --help
 | `--onnx-path PATH` | required | Trusted ONNX artifact; sibling config may be unpickled |
 | `--model-name TEXT` | required | ssm-simulators base model name; a `_deadline` variant is rejected |
 | `--network-type TEXT` | `lan` | `lan`, `cpn`, `opn`, or `gonogo` |
-| `--aux-category TEXT` | cpn: required; opn/gonogo: `deadline` | What an auxiliary network's trailing input encodes; `choice` for a cpn |
+| `--aux-category TEXT` | cpn: `choice`; opn: `omission`; gonogo: `nogo` | What an auxiliary network's output is the probability of; an explicit value must match the type's |
 | `--lan-onnx PATH` | resolved by name | Local base LAN for `hssm_missing_load`; required for models outside HSSM's registry |
 | `--report-path PATH` | next to ONNX | Detailed JSON report destination |
 | `--skip-density` | false | Mark density skipped (LAN) |

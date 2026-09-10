@@ -98,8 +98,9 @@ LAN gate set (`structure`, `hssm_load`, `density`) and does not pass
 validate a cpn at all. Teaching it the auxiliary gate set is a separate change.
 
 The detailed report has `schema_version: 1`, artifact/model/network identity
-(`onnx`, `model`, `network_type`, and `aux_category` — `null` for a LAN,
-`choice` for a cpn, `deadline` for an opn or gonogo), aggregate `passed`, and a
+(`onnx`, `model`, `network_type`, and `aux_category` — what the output is the
+probability of: `null` for a LAN, `choice` for a cpn, `omission` for an opn,
+`nogo` for a gonogo), aggregate `passed`, and a
 `gates` list whose entries include thresholds, scores, errors, or skip reasons
 as applicable. Adding a nullable top-level key does not bump `schema_version`;
 the gate set a report carries is keyed on `network_type`, not on the version,

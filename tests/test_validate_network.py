@@ -295,7 +295,7 @@ class TestAuxiliaryWiring:
         ]
         assert report["network_type"] == network_type
         assert (
-            report["aux_category"] == {"cpn": "choice", "opn": "deadline"}[network_type]
+            report["aux_category"] == {"cpn": "choice", "opn": "omission"}[network_type]
         )
         # The skips must actually take effect: a broken skip would leave this
         # suite green while it imported HSSM and simulated 100k trials a draw.
@@ -305,12 +305,20 @@ class TestAuxiliaryWiring:
         assert gates["accuracy"]["skipped"]
         assert gates["accuracy"]["reason"] == "--skip-accuracy"
 
-    def test_opn_defaults_its_category_to_deadline(self, tmp_path):
-        path = make_onnx(tmp_path / "opn.onnx", (1, 5))
+    @pytest.mark.parametrize(
+        "network_type, expected",
+        [("cpn", "choice"), ("opn", "omission"), ("gonogo", "nogo")],
+    )
+    def test_each_type_defaults_to_its_output_category(
+        self, tmp_path, network_type, expected
+    ):
+        # The vocabulary names the OUTPUT probability, shared with LANfactory's
+        # corpora and the publisher's provenance; each type has exactly one.
+        path = make_onnx(tmp_path / "aux.onnx", (1, 5))
         report = validate_network(
-            path, model_name="ddm", network_type="opn", **AUX_SKIPS
+            path, model_name="ddm", network_type=network_type, **AUX_SKIPS
         )
-        assert report["aux_category"] == "deadline"
+        assert report["aux_category"] == expected
 
     def test_gonogo_reports_its_two_unrunnable_gates_as_skipped(self, tmp_path):
         path = make_onnx(tmp_path / "gonogo.onnx", (1, 5))
@@ -333,22 +341,21 @@ class TestAuxiliaryWiring:
                 path, model_name="ddm_deadline", network_type="opn", **AUX_SKIPS
             )
 
-    def test_cpn_without_a_category_fails_naming_the_flag(self, tmp_path):
-        path = make_onnx(tmp_path / "cpn.onnx", (1, 5))
-        with pytest.raises(ValueError, match="--aux-category"):
-            validate_network(path, model_name="ddm", network_type="cpn", **AUX_SKIPS)
-
     @pytest.mark.parametrize(
-        "network_type, bad",
-        [("cpn", "deadline"), ("opn", "choice"), ("gonogo", "choice")],
+        "network_type, bad, expected",
+        [
+            ("cpn", "omission", "choice"),
+            ("opn", "deadline", "omission"),
+            ("gonogo", "choice", "nogo"),
+        ],
     )
-    def test_a_category_the_type_cannot_encode_is_rejected(
-        self, tmp_path, network_type, bad
+    def test_a_category_the_type_cannot_output_is_rejected_naming_the_expected(
+        self, tmp_path, network_type, bad, expected
     ):
-        # Otherwise a cpn could be validated and published with
-        # aux_category="deadline" recorded in its report.
+        # "deadline" is the old input-naming vocabulary; a provenance that
+        # still carries it must be refused, not recorded in the report.
         path = make_onnx(tmp_path / "aux.onnx", (1, 5))
-        with pytest.raises(ValueError, match="Unknown --aux-category"):
+        with pytest.raises(ValueError, match=f"Unknown --aux-category.*{expected}"):
             validate_network(
                 path,
                 model_name="ddm",

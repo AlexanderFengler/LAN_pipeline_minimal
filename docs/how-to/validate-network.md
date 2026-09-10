@@ -82,10 +82,13 @@ The network's output must already be a log-probability (log-sigmoid baked into
 the graph, every value ≤ 0). A raw-logit export fails A4 before any truth is
 simulated.
 
-A cpn must be told what it predicts with `--aux-category choice`; the flag is
-the only record of the category the network was derived for, so it has no
-default. An opn or gonogo defaults to `deadline`. The report carries the
-resolved value as top-level `aux_category`.
+`--aux-category` names what the network's output is the probability of:
+`choice` for a cpn, `omission` for an opn, `nogo` for a gonogo. That is the
+vocabulary LANfactory's derived corpora and the publisher's provenance carry,
+and each type has exactly one value, so the flag defaults to it; an explicit
+value that does not match (say `deadline` for an opn) is rejected naming the
+expected one. The report carries the resolved value as top-level
+`aux_category`.
 
 A3 resolves the base LAN by model name through HSSM, which downloads it for
 registry models. Pass `--lan-onnx` to use a local LAN instead; models outside

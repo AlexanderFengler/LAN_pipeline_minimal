@@ -120,13 +120,18 @@ GATES_BY_NETWORK_TYPE = {
     "opn": ("structure", "parity", "hssm_missing_load", "accuracy"),
     "gonogo": ("structure", "parity", "hssm_missing_load", "accuracy"),
 }
-# What the trailing input of an auxiliary network encodes. cpn has no default:
-# a CPN is defined by the category it predicts, and defaulting it would let a
-# net trained on one thing be validated (and published) as another.
+# What an auxiliary network's OUTPUT is the probability of. This is the one
+# vocabulary the whole pipeline shares: LANfactory's derived corpora record it
+# as generator_config["source"]["aux_category"], the MLflow training run logs
+# it as a param, and the publisher writes it into the provenance and the model
+# card. It names the output, not the trailing input: a cpn takes a choice and
+# outputs P(choice | θ); an opn takes a deadline and outputs P(rt > deadline).
+# Under that contract each type has exactly one possibility, so each defaults
+# to it; an explicit value is still checked so a mislabelled net is refused.
 AUX_CATEGORIES_BY_NETWORK_TYPE = {
     "cpn": ("choice",),
-    "opn": ("deadline",),
-    "gonogo": ("deadline",),
+    "opn": ("omission",),
+    "gonogo": ("nogo",),
 }
 GONOGO_SKIP_REASON = "HSSM has no gonogo consumer"
 
@@ -865,11 +870,14 @@ def find_sibling(folder: Path, suffix: str) -> Path | None:
 
 
 def resolve_aux_category(network_type: str, aux_category: str | None) -> str | None:
-    """The category an auxiliary network's trailing input encodes, validated.
+    """What the network's output is the probability of, validated.
 
-    None for a LAN. opn/gonogo have exactly one possibility and default to it;
-    cpn must be told, because the flag is the only record of what the network
-    was derived for.
+    The vocabulary is the one shared with LANfactory's derived corpora and the
+    publisher's provenance: ``choice`` for a cpn, ``omission`` for an opn,
+    ``nogo`` for a gonogo. None for a LAN. Every auxiliary type has exactly
+    one possibility and defaults to it; an explicit value must match, so a
+    record that says the net is something else is rejected here rather than
+    written into the report.
     """
     allowed = AUX_CATEGORIES_BY_NETWORK_TYPE.get(network_type)
     if allowed is None:
@@ -879,11 +887,6 @@ def resolve_aux_category(network_type: str, aux_category: str | None) -> str | N
             )
         return None
     if aux_category is None:
-        if network_type == "cpn":
-            raise ValueError(
-                "--aux-category is required for a cpn: name what the network "
-                f"predicts, one of {list(allowed)}."
-            )
         return allowed[0]
     if aux_category not in allowed:
         raise ValueError(
@@ -1029,8 +1032,9 @@ def main(
     aux_category: str | None = typer.Option(
         None,
         help=(
-            "What an auxiliary network's trailing input encodes. Required for "
-            "cpn (choice); opn/gonogo default to deadline."
+            "What an auxiliary network's output is the probability of: choice "
+            "for a cpn, omission for an opn, nogo for a gonogo. Each type "
+            "defaults to its value; an explicit one must match it."
         ),
     ),
     lan_onnx: Path | None = typer.Option(
