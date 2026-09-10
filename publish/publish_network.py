@@ -107,6 +107,11 @@ AUX_PROVENANCE_KEYS = (
     "integration_max_t",
 )
 AUX_PROVENANCE_OPTIONAL_KEYS = ("source_lan_run_id",)
+# Keys that must exist on the run but may be empty: the legacy LANs on the
+# Hub (the 2023 artifacts, bare ``{model}.onnx``) predate training-run uuids,
+# so a network derived from one has a sha256 and a Hub commit but no
+# run_uuid. LANfactory logs the key as "" in that case; the card says so.
+AUX_PROVENANCE_MAY_BE_EMPTY = ("source_lan_run_uuid",)
 # The contract's vocabulary, and the subset this module can publish. Only a
 # derived-from-lan run has the source_lan_* / integration_* keys the card is
 # written from; no writer emits "trained-from-simulation" yet, and publishing
@@ -451,11 +456,19 @@ def aux_provenance(params: Mapping[str, str], network_type: str) -> dict[str, st
     cpn/opn) has none and gets ``{}``. A cpn/opn run without them is refused
     by the first missing key: a run trained from a simulated corpus carries
     none of these, and until it is relabelled its network has no source LAN
-    to be traced to. An empty, ``None`` or ``null`` value counts as missing.
+    to be traced to. An empty, ``None`` or ``null`` value counts as missing,
+    except for ``source_lan_run_uuid``, which a legacy LAN legitimately lacks
+    (``AUX_PROVENANCE_MAY_BE_EMPTY``): the key must still exist on the run, and
+    an absent value is normalised to ``""``.
     """
     if network_type not in AUX_CATEGORY_BY_NETWORK_TYPE:
         return {}
-    missing = [key for key in AUX_PROVENANCE_KEYS if not _present(params.get(key))]
+    missing = [
+        key
+        for key in AUX_PROVENANCE_KEYS
+        if (key not in params)
+        or (key not in AUX_PROVENANCE_MAY_BE_EMPTY and not _present(params[key]))
+    ]
     if missing:
         raise PublishError(
             f"Training run has no {missing[0]!r} param, so the {network_type}'s "
@@ -464,7 +477,10 @@ def aux_provenance(params: Mapping[str, str], network_type: str) -> dict[str, st
             f"({', '.join(AUX_PROVENANCE_KEYS)}); relabel it with the source "
             "LAN's identity before publishing."
         )
-    provenance = {key: str(params[key]) for key in AUX_PROVENANCE_KEYS}
+    provenance = {
+        key: str(params[key]) if _present(params[key]) else ""
+        for key in AUX_PROVENANCE_KEYS
+    }
     method = provenance["derivation_method"]
     if method not in DERIVATION_METHODS:
         raise PublishError(
@@ -641,7 +657,7 @@ def write_aux_model_card(
             "network.",
             f"Derivation: {provenance['derivation_method']} — from the `{model}` "
             f"LAN with sha256 {provenance['source_lan_sha256']}, training "
-            f"run_uuid {provenance['source_lan_run_uuid']}, Hub commit "
+            f"run_uuid {provenance['source_lan_run_uuid'] or 'unknown (a legacy artifact without a training run)'}, Hub commit "
             f"{provenance['source_lan_hf_commit']}; integrated on a {grid}-point "
             f"grid up to max_t = {max_t} s.",
             f"Validation (accuracy gate): mean |network − truth| "

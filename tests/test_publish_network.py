@@ -241,6 +241,21 @@ class TestAuxProvenance:
         with pytest.raises(PublishError, match="source_lan_hf_commit"):
             aux_provenance({**PROVENANCE, "source_lan_hf_commit": absent}, "cpn")
 
+    @pytest.mark.parametrize("absent", ["", "None", "null"])
+    def test_a_legacy_lan_may_have_no_run_uuid(self, absent):
+        # The 2023 Hub artifacts predate run uuids; LANfactory logs the key
+        # as "" for a corpus derived from one. The key must exist, its value
+        # may be empty, and it comes back normalised to "".
+        provenance = aux_provenance(
+            {**PROVENANCE, "source_lan_run_uuid": absent}, "cpn"
+        )
+        assert provenance["source_lan_run_uuid"] == ""
+        with pytest.raises(PublishError, match="source_lan_run_uuid"):
+            aux_provenance(
+                {k: v for k, v in PROVENANCE.items() if k != "source_lan_run_uuid"},
+                "cpn",
+            )
+
     def test_a_none_valued_optional_key_is_left_out(self):
         params = {**PROVENANCE, "source_lan_run_id": "None"}
         assert "source_lan_run_id" not in aux_provenance(params, "cpn")

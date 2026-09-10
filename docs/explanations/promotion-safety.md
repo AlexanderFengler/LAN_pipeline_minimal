@@ -73,7 +73,8 @@ must be traceable to every network derived from it. The publisher therefore
 refuses an auxiliary training run that does not name its source LAN
 (`derivation_method`, `aux_category`, `source_lan_run_uuid`,
 `source_lan_sha256`, `source_lan_hf_commit`, `integration_grid`,
-`integration_max_t`), naming the first missing key. A run whose
+`integration_max_t`), naming the first missing key; only `source_lan_run_uuid`
+may be empty, for a legacy Hub LAN that predates training-run uuids. A run whose
 `aux_category` contradicts its network type is refused for the same reason a
 wrong-model ONNX is: the file would carry a root filename that promises
 something else.
