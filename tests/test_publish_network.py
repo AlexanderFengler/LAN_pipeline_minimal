@@ -184,15 +184,19 @@ class TestGateVerdict:
         assert "hssm_missing_load" in reason and "accuracy" in reason
 
     @pytest.mark.parametrize("network_type", ["cpn", "opn"])
-    def test_a_skipped_missing_load_gate_refuses_an_auxiliary_network(
-        self, network_type
+    @pytest.mark.parametrize("gate", ["structure", "hssm_missing_load", "accuracy"])
+    def test_a_skipped_required_gate_refuses_an_auxiliary_network(
+        self, network_type, gate
     ):
-        # The cpn gate skips itself under HSSM < 0.6.0; that skip is exactly
-        # a network nothing has loaded, and it must not publish.
-        skipped = {**AUX_ALL_RAN, "hssm_missing_load": (True, True)}
+        # Every required gate, not just the one with a built-in skip: the cpn
+        # missing-load gate skips itself under HSSM < 0.6.0, and --skip-accuracy
+        # skips accuracy on purpose. Either is a network nothing has checked.
+        skipped = {**AUX_ALL_RAN, gate: (True, True)}
+        assert all(g["passed"] for g in report(network_type, **skipped)["gates"])
+
         ok, reason = gate_verdict(report(network_type, **skipped))
         assert not ok
-        assert "hssm_missing_load" in reason and "not actually checked" in reason
+        assert gate in reason and "not actually checked" in reason
 
     def test_a_gonogo_report_is_refused_for_lack_of_a_consumer(self):
         # Even one where every gate ran: nothing in HSSM loads a gonogo, and
@@ -1076,7 +1080,19 @@ class TestAuxiliaryPublish:
 
         def fake_validate(**kwargs):
             calls["validate"].append(kwargs)
-            return aux_report(kwargs["network_type"], kwargs["model_name"])
+            r = aux_report(kwargs["network_type"], kwargs["model_name"])
+            # Honour the flag the way the real validator does: a skipped
+            # accuracy gate reports passed=True with skipped=True and none of
+            # the numbers. Without this the stub would let --skip-accuracy
+            # complete a live publish, which is the opposite of the contract.
+            if kwargs.get("skip_accuracy"):
+                r["gates"][-1] = {
+                    "gate": "accuracy",
+                    "passed": True,
+                    "skipped": True,
+                    "reason": "--skip-accuracy",
+                }
+            return r
 
         def fake_upload(**kwargs):
             calls["upload"].append(kwargs)
@@ -1160,6 +1176,24 @@ class TestAuxiliaryPublish:
         assert stubs["validate"] == [] and stubs["upload"] == []
         assert not (tmp_path / "staged").exists()
 
+    def test_skip_accuracy_can_rehearse_but_never_publish(self, tmp_path, store, stubs):
+        # The flag's contract: it shortens a dry run and can never produce an
+        # upload, because accuracy is a required gate and a skipped required
+        # gate is a refusal. Without --dry-run, to prove the refusal is what
+        # stands in front of the uploader.
+        run_id = store(self.params("cpn"), self.TAGS)
+        source = self.artifacts(tmp_path, "cpn")
+
+        result = self.publish(run_id, source, tmp_path, skip_accuracy=True)
+
+        assert result["published"] is False
+        assert (
+            "accuracy" in result["error"] and "not actually checked" in result["error"]
+        )
+        assert stubs["upload"] == []
+        # No card either: there are no gate numbers to put on one.
+        assert not (tmp_path / "staged" / "model_card.yaml").exists()
+
     def test_a_cpn_with_provenance_publishes_under_its_root_filename(
         self, tmp_path, store, stubs
     ):
@@ -1208,11 +1242,14 @@ class TestAuxiliaryPublish:
         lan = tmp_path / "ddm_sdv.onnx"
         lan.write_bytes(b"lan")
 
+        # dry_run: with skip_accuracy honoured by the stub this cannot publish,
+        # and the passthrough is what is under test here.
         result = self.publish(
-            run_id, source, tmp_path, lan_onnx=lan, skip_accuracy=True
+            run_id, source, tmp_path, lan_onnx=lan, skip_accuracy=True, dry_run=True
         )
 
         assert result["root_filename"] == "ddm_sdv_opn.onnx"
+        assert result["published"] is False
         (validate,) = stubs["validate"]
         assert validate["aux_category"] is None
         assert validate["lan_onnx"] == lan
@@ -1241,6 +1278,44 @@ class TestAuxiliaryPublish:
         assert "relabel" not in str(excinfo.value)
         assert stubs["validate"] == [] and stubs["upload"] == []
         assert not (tmp_path / "staged").exists()
+
+    def test_the_cli_forwards_lan_onnx_and_skip_accuracy(self, tmp_path, store, stubs):
+        # The main -> run_publish boundary is the one the operator drives;
+        # the run_publish -> validate_network passthrough is pinned above.
+        from typer.testing import CliRunner
+
+        from publish import publish_network
+
+        run_id = store(self.params("opn"), self.TAGS)
+        source = self.artifacts(tmp_path, "opn")
+        lan = tmp_path / "ddm_sdv.onnx"
+        lan.write_bytes(b"lan")
+
+        result = CliRunner().invoke(
+            publish_network.app,
+            [
+                "--hf-repo",
+                "example/HSSM_staging",
+                "--run-id",
+                run_id,
+                "--artifact-dir",
+                str(source),
+                "--staging-dir",
+                str(tmp_path / "staged"),
+                "--lan-onnx",
+                str(lan),
+                "--skip-accuracy",
+                "--dry-run",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        (validate,) = stubs["validate"]
+        assert validate["lan_onnx"] == lan
+        assert validate["skip_accuracy"] is True
+        plan = json.loads(result.stdout.strip().splitlines()[-1])
+        assert plan["published"] is False and "accuracy" in plan["gate"]
+        assert "model_card.yaml" not in plan["staged"]
         assert stubs["upload"] == []
 
     def test_a_dry_run_shows_the_provenance_and_the_generated_card(
