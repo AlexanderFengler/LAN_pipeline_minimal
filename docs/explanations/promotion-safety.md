@@ -34,9 +34,15 @@ The gates run from cheapest to most informative:
    log probability.
 4. **Density** checks mass and simulator-relative distribution quality.
 
-Structure, HSSM load, and density must be present, run, and pass. A missing or
-skipped required gate is a refusal even if the report's aggregate `passed` field
-is true. Parity may skip because Torch artifacts legitimately lack JAX state.
+Which gates are required depends on the report's `network_type`. For a LAN,
+structure, HSSM load, and density must be present, run, and pass. For a cpn or
+opn the density gates do not apply -- the network is not a density -- and
+structure, HSSM missing-data load, and accuracy take their place. In both cases
+a missing or skipped required gate is a refusal even if the report's aggregate
+`passed` field is true. Parity may skip because Torch artifacts legitimately
+lack JAX state. A report without `network_type` predates the auxiliary gate set
+and cannot say which set judged it, so it is refused rather than assumed to be
+a LAN's.
 
 ### 4. Dry-run review
 
@@ -59,7 +65,27 @@ flag alone would be the ordinary invocation this check exists to prevent.
 `--dry-run` is not prompted: it touches neither Hugging Face nor MLflow,
 though it still stages files locally and rewrites `validation_report.json`.
 
-### 6. Explicit replacement and verifiable records
+### 6. Auxiliary networks carry their origin, or do not ship
+
+A cpn or opn is integrated from a LAN, so its correctness is inherited: it can
+be no better than the LAN it came from, and a problem found in that LAN later
+must be traceable to every network derived from it. The publisher therefore
+refuses an auxiliary training run that does not name its source LAN
+(`derivation_method`, `aux_category`, `source_lan_run_uuid`,
+`source_lan_sha256`, `source_lan_hf_commit`, `integration_grid`,
+`integration_max_t`), naming the first missing key. A run whose
+`aux_category` contradicts its network type is refused for the same reason a
+wrong-model ONNX is: the file would carry a root filename that promises
+something else.
+
+Two refusals are governance decisions rather than checks. A `gonogo` network is
+never published, because nothing in HSSM consumes one and a root filename on
+the Hub is permanent -- publishing it would reserve `{model}_gonogo.onnx` for a
+network no release can load. A `_deadline` model name is refused because HSSM
+builds the root filename from the base model, so a network published under the
+variant is unreachable and its name cannot be taken back.
+
+### 7. Explicit replacement and verifiable records
 
 Replacing an existing canonical root filename requires `--overwrite-root`.
 After an upload, the publisher reads repository head and records a trusted
@@ -92,3 +118,8 @@ they cannot be collapsed into an ordinary CLI invocation.
 | Density failure | Inspect KDE/manifold plots and revisit training data or model quality |
 | Existing root artifact | Review the target and use `--overwrite-root` only for an intentional replacement |
 | Production-repository refusal | Complete the separate staging review and governed promotion process |
+| Missing provenance key | Relabel the training run with its source LAN's identity, or retrain from a `derive-aux` corpus |
+| `aux_category` mismatch | The run was derived for another category; derive and train the right one |
+| HSSM-missing-load skipped (cpn) | The locked HSSM is older than 0.6.0; wait for the release that feeds `response` to a cpn |
+| Accuracy failure | Compare against the source LAN's density gate; the error is inherited or the corpus is wrong |
+| gonogo or `_deadline` refusal | Not publishable by design; there is no flag |

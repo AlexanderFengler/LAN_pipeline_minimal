@@ -29,6 +29,44 @@ validation_report.json
 publication run -> Hugging Face URL + verified commit (when available)
 ```
 
+## The derived-from-LAN chain
+
+An auxiliary network (cpn, opn) has no data-generation experiment. Its corpus
+is integrated from a published LAN by LANfactory's `derive-aux`, so its lineage
+points at another network rather than at simulator workers:
+
+```text
+published LAN (root file on the Hub)
+  |-- source_lan_sha256      the exact bytes integrated
+  |-- source_lan_hf_commit   the Hub revision they were downloaded at
+  |-- source_lan_run_uuid    the LAN's own training run
+  `-- source_lan_run_id      that run's MLflow id, when known
+            |
+            | derivation_method, aux_category,
+            | integration_grid, integration_max_t
+            v
+derived corpus -> training run (params above; tags derive_total_mass_*)
+            |
+            v
+validation_report.json (structure, parity, hssm_missing_load, accuracy)
+            |
+            v
+publication run -> Hugging Face URL + the same provenance params
+```
+
+The keys are one contract shared by three writers: the derived corpus's
+`generator_config["source"]`, the training run's MLflow params, and the
+publication run's params. `derivation_method` is `derived-from-lan` or
+`trained-from-simulation`; `aux_category` is `choice` for a cpn and `omission`
+for an opn. The `derive_total_mass_{mean,min,max}` tags record the per-file
+total mass of the integrated density, which is deliberately not renormalised:
+mass past the integration window is the source LAN's, and the number is kept
+so that inheritance can be read rather than hidden.
+
+The publisher refuses an auxiliary run that lacks any required key, so a
+network on the Hub can always be traced back to the LAN it was integrated
+from -- which is what makes a later problem in that LAN actionable.
+
 ## Why training links to an experiment
 
 One data-generation submission can create many worker runs, and multi-lane
@@ -61,6 +99,7 @@ is ineligible for publication.
 | Which workers formed the data source? | Runs and file inventories in the generation experiment |
 | Which generation collection trained the network? | `data_generation_experiment_id` on the training run |
 | Which files belong to the training run? | The run's `run_uuid` and matching artifact names |
+| Which LAN was an auxiliary network integrated from? | `source_lan_sha256` and `source_lan_hf_commit` on the training and publication runs |
 | Which checks ran on the candidate? | `validation_report.json`, including each gate's skipped state |
 | What was uploaded? | The publication run and Hugging Face URL |
 | Which remote revision is confirmed? | `hf_commit` only when `hf_commit_verified` is true |

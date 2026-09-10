@@ -160,12 +160,11 @@ registry models. Pass `--lan-onnx` to use a local LAN instead; models outside
 HSSM's registry require it. Either way the assembly is LAN + auxiliary net
 (`loglik_kind="approx_differentiable"`), never HSSM's analytical likelihood.
 
-!!! warning "Auxiliary reports do not promote yet"
-
-    The publisher still requires the LAN gate set and does not pass
-    `--aux-category`, so it refuses every auxiliary report, and
-    `lan-publish --network-type cpn` cannot validate a cpn at all. Use this
-    command to validate an auxiliary artifact; publishing it is a follow-up.
+`lan-publish` runs the same gates for a cpn or opn, passing `--aux-category
+choice` for a cpn itself and forwarding `--lan-onnx`; see
+[Publish an auxiliary network](stage-and-publish.md#publish-an-auxiliary-network-cpn-opn)
+for what the training run must carry. A gonogo can be validated here but is
+never published.
 
 Two skips are built in and reported rather than silent:
 
