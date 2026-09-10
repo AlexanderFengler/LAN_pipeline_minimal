@@ -24,6 +24,38 @@ G1-G3 are mechanical. G4 is statistical, and it calibrates itself against the
 sampling noise of the simulator rather than against a fixed number — see
 DEFAULT_HELLINGER_RATIO_MAX.
 
+Auxiliary networks (cpn / opn / gonogo) are not densities, so G3 and G4 do not
+apply to them. They get their own pair after G1 and G2:
+
+    A3 hssm-missing-load — hssm.HSSM accepts the network as
+                    ``loglik_missing_data`` next to the base LAN and produces a
+                    finite initial logp on simulated data with missing rows,
+                    at p_outlier = 0 and at HSSM's default lapse.
+    A4 accuracy   — the network's probability matches a Monte-Carlo truth at
+                    several in-bounds parameter draws (see aux_truth). This is
+                    the gate that notices an untrained or mis-categorised net.
+
+The auxiliary contract every gate here enforces (``--model-name`` is always the
+BASE model; the ``_deadline`` variant is derived internally):
+
+    cpn     input [θ in list_params order, extra_fields..., choice], width
+            n_params + 1, output log P_s(choice | θ)
+    opn     input [θ..., deadline], width n_params + 1,
+            output log S_s(deadline | θ) = log P_s(rt > deadline | θ)
+    gonogo  input [θ..., deadline], width n_params + 1,
+            output log P_s(nogo ∪ omission | θ) — derived only, no HSSM consumer
+
+Outputs are SSM-only marginals with the log-sigmoid baked into the graph, so
+every value is ≤ 0; HSSM applies the lapse mixture outside the network.
+
+On the cpn truth: ssms does NOT censor a base model at max_t. A trial that has
+not terminated by max_t comes back at rt ≈ max_t + t with its sign-implied
+choice, while a derived CPN integrates the first-passage density only up to
+max_t (20 s). aux_truth therefore reports both ``truth`` (every trial) and
+``truth_rt_lt_max_t`` (trials that finished inside the window); the gate judges
+``truth``, and the two only differ for parameter draws where a visible share of
+trials outlasts 20 s.
+
 Trust: G2 unpickles the ``*_network_config.pickle`` sitting next to the ONNX,
 because that is the only format lanfactory writes it in, and unpickling runs
 whatever the file says. Point this at artifact folders you produced or fetched
@@ -65,15 +97,137 @@ DEFAULT_MASS_RANGE = (0.9, 1.1)
 # than sampling error.
 DEFAULT_HELLINGER_RATIO_MAX = 3.0
 
-# LANs take [*params, rt, response]; cpn/opn take the parameters only.
-EXTRA_INPUTS_BY_NETWORK_TYPE = {"lan": 2, "cpn": 0, "opn": 0, "gonogo": 0}
+# Inputs beyond the parameter vector, per network type. The trailing inputs
+# come last in the graph, after θ (list_params order) and any extra_fields.
+EXTRA_INPUTS_BY_NETWORK_TYPE = {
+    "lan": 2,  # rt, response: a density over both
+    "cpn": 1,  # choice: log P(choice | θ), one row per choice code
+    "opn": 1,  # deadline: log P(rt > deadline | θ), the survival function
+    "gonogo": 1,  # deadline: log P(nogo ∪ omission | θ); derived only
+}
+# What G1 says the width should be made of, per type.
+INPUT_LAYOUT_BY_NETWORK_TYPE = {
+    "lan": "len(param_space) + rt + response for a LAN",
+    "cpn": "len(param_space) + choice for a CPN",
+    "opn": "len(param_space) + deadline for an OPN",
+    "gonogo": "len(param_space) + deadline for a gonogo network",
+}
+# The gate names each type reports, in order. A LAN's list is unchanged: the
+# publisher (REQUIRED_GATES) and the pinned tests key on it.
+GATES_BY_NETWORK_TYPE = {
+    "lan": ("structure", "parity", "hssm_load", "density"),
+    "cpn": ("structure", "parity", "hssm_missing_load", "accuracy"),
+    "opn": ("structure", "parity", "hssm_missing_load", "accuracy"),
+    "gonogo": ("structure", "parity", "hssm_missing_load", "accuracy"),
+}
+# What the trailing input of an auxiliary network encodes. cpn has no default:
+# a CPN is defined by the category it predicts, and defaulting it would let a
+# net trained on one thing be validated (and published) as another.
+AUX_CATEGORIES_BY_NETWORK_TYPE = {
+    "cpn": ("choice",),
+    "opn": ("deadline",),
+    "gonogo": ("deadline",),
+}
+GONOGO_SKIP_REASON = "HSSM has no gonogo consumer"
+
+# HSSM ≥ 0.6.0 feeds ``response`` to a width n_params + 1 CPN; every earlier
+# release calls the CPN with the parameters only, so a contract-conformant CPN
+# cannot even load there. The cpn A3 gate skips itself below that version and
+# activates on its own when the lock moves.
+HSSM_CPN_RESPONSE_MIN_VERSION = "0.6.0"
+HSSM_CPN_SKIP_REASON = (
+    f"HSSM < {HSSM_CPN_RESPONSE_MIN_VERSION} ignores response on missing rows"
+)
+
+# ssms marks an omission in ``rts`` only — ``choices`` still carries the
+# sign-implied choice — and HSSM's missing_data marker is the same value.
+OMISSION_RT = -999.0
+# The window a derived auxiliary network integrates over, and the simulator's
+# default max_t. See the module docstring for why the two matter together.
+AUX_MAX_T = 20.0
+# ssms' bounds for the deadline parameter (DEADLINE_PARAM_CONFIG). A deadline
+# outside them is outside anything the derived net was built for.
+DEADLINE_BOUNDS = (0.001, 10.0)
+
+# A4 thresholds — PROVISIONAL. A derived ddm_sdv CPN measured 0.0012 mean |err|
+# against a truth SE of ~0.0016 at n_sim=100_000, so a correct network sits an
+# order of magnitude under the mean bound; a constant-0.5 net errs ~0.25 and a
+# wrong-category net ~0.5, both far above the max bound. The numbers are to be
+# calibrated ONCE on the first ddm_sdv gate run and then frozen, exactly as the
+# density gate's DEFAULT_HELLINGER_RATIO_MAX was. Exposed as CLI flags so that
+# calibration run needs no code change; do not loosen them to pass a candidate.
+DEFAULT_ACCURACY_MEAN_ABS_MAX = 0.01
+DEFAULT_ACCURACY_MAX_ABS_MAX = 0.03
 
 
 def _result(name: str, passed: bool, **details: Any) -> dict:
     return {"gate": name, "passed": bool(passed), **details}
 
 
-def gate_structure(onnx_path: Path, expected_input_dim: int | None) -> dict:
+def _draw_theta(model_config: dict, rng: np.random.Generator, shrink: float = 0.0):
+    """One uniform parameter draw from the training box shrunk by ``shrink``.
+
+    ``shrink`` is the fraction cut from each side: 0.0 is the full box, 0.1
+    leaves the central 80%. Networks are not expected to be accurate at the
+    very edge of the space they were trained on.
+    """
+    lower, upper = (np.asarray(b, dtype=float) for b in model_config["param_bounds"])
+    span = upper - lower
+    lower_in, upper_in = lower + shrink * span, upper - shrink * span
+    return lower_in + (upper_in - lower_in) * rng.uniform(size=lower.shape)
+
+
+def _hssm_model_kwargs(model_name: str, model_config: dict) -> dict:
+    """Extra ``hssm.HSSM`` kwargs for a model absent from HSSM's registry.
+
+    list_params must be ssms' positional order — for custom models it defines
+    the likelihood input order, which is the order the network was trained on.
+    """
+    from hssm.modelconfig import list_models
+
+    if model_name in list_models():
+        return {}
+    lows, highs = model_config["param_bounds"]
+    return {
+        "model_config": {
+            "list_params": list(model_config["params"]),
+            "bounds": {
+                p: (float(lo), float(hi))
+                for p, lo, hi in zip(model_config["params"], lows, highs)
+            },
+            "backend": "jax",
+        }
+    }
+
+
+def _simulate(
+    model_name: str,
+    theta: np.ndarray,
+    n_samples: int,
+    random_state: int,
+    max_t: float = AUX_MAX_T,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Flat (rts, choices) from one ssms run of ``model_name`` at ``theta``."""
+    import ssms
+
+    sim = ssms.basic_simulators.simulator.simulator(
+        model=model_name,
+        theta=theta,
+        n_samples=n_samples,
+        random_state=random_state,
+        max_t=max_t,
+    )
+    return (
+        np.asarray(sim["rts"]).reshape(-1),
+        np.asarray(sim["choices"]).reshape(-1),
+    )
+
+
+def gate_structure(
+    onnx_path: Path,
+    expected_input_dim: int | None,
+    width_layout: str = INPUT_LAYOUT_BY_NETWORK_TYPE["lan"],
+) -> dict:
     """G1: the ONNX satisfies the ecosystem's load-time contract.
 
     HSSM's make_jax_func rejects symbolic dims outright, so a graph with a
@@ -129,8 +283,7 @@ def gate_structure(onnx_path: Path, expected_input_dim: int | None) -> dict:
             False,
             input_shape=list(input_shape),
             error=(
-                f"input width {width} != expected {expected_input_dim} "
-                "(len(param_space) + rt + response for a LAN)"
+                f"input width {width} != expected {expected_input_dim} ({width_layout})"
             ),
         )
 
@@ -241,51 +394,21 @@ def gate_hssm_load(
     """
     try:
         import hssm
+        import pandas as pd
         import ssms
 
         rng = np.random.default_rng(seed)
         model_config = ssms.config.model_config[model_name]
-        lower, upper = (
-            np.asarray(b, dtype=float) for b in model_config["param_bounds"]
-        )
-        theta = lower + (upper - lower) * rng.uniform(size=lower.shape)
-
-        sim = ssms.basic_simulators.simulator.simulator(
-            model=model_name, theta=theta, n_samples=n_trials, random_state=seed
-        )
-        import pandas as pd
-
-        data = pd.DataFrame(
-            {
-                "rt": np.asarray(sim["rts"]).reshape(-1),
-                "response": np.asarray(sim["choices"]).reshape(-1),
-            }
-        )
-
-        kwargs = {}
-        from hssm.modelconfig import list_models
-
-        if model_name not in list_models():
-            # Not in HSSM's registry: supply the identity HSSM cannot look up
-            # itself. list_params must be ssms' positional order — for custom
-            # models it defines the likelihood input order, which is the order
-            # the network was trained on.
-            lows, highs = model_config["param_bounds"]
-            kwargs["model_config"] = {
-                "list_params": list(model_config["params"]),
-                "bounds": {
-                    p: (float(lo), float(hi))
-                    for p, lo, hi in zip(model_config["params"], lows, highs)
-                },
-                "backend": "jax",
-            }
+        theta = _draw_theta(model_config, rng)
+        rts, choices = _simulate(model_name, theta, n_trials, seed)
+        data = pd.DataFrame({"rt": rts, "response": choices})
 
         model = hssm.HSSM(
             data=data,
             model=model_name,
             loglik=str(onnx_path),
             loglik_kind="approx_differentiable",
-            **kwargs,
+            **_hssm_model_kwargs(model_name, model_config),
         )
         pymc_model = model.pymc_model
         logp = float(pymc_model.compile_logp()(pymc_model.initial_point()))
@@ -331,11 +454,6 @@ def gate_density(
 
         rng = np.random.default_rng(seed)
         model_config = ssms.config.model_config[model_name]
-        lower, upper = (
-            np.asarray(b, dtype=float) for b in model_config["param_bounds"]
-        )
-        span = upper - lower
-        lower_in, upper_in = lower + shrink * span, upper - shrink * span
         declared_choices = list(model_config["choices"])
 
         session = ort.InferenceSession(str(onnx_path))
@@ -343,7 +461,7 @@ def gate_density(
 
         per_draw = []
         for draw in range(n_param_draws):
-            theta = lower_in + (upper_in - lower_in) * rng.uniform(size=lower.shape)
+            theta = _draw_theta(model_config, rng, shrink)
             sim = ssms.basic_simulators.simulator.simulator(
                 model=model_name, theta=theta, n_samples=n_sim, random_state=seed + draw
             )
@@ -454,10 +572,304 @@ def gate_density(
     )
 
 
+def _hssm_version_supports_cpn_response() -> tuple[bool, str]:
+    """Whether the installed HSSM feeds ``response`` to a CPN; and its version.
+
+    Read from package metadata rather than ``hssm.__version__`` so the check
+    costs nothing: it decides whether to import the inference stack at all.
+    """
+    from importlib.metadata import version
+
+    from packaging.version import Version
+
+    installed = version("hssm")
+    return Version(installed) >= Version(HSSM_CPN_RESPONSE_MIN_VERSION), installed
+
+
+def gate_hssm_missing_load(
+    onnx_path: Path,
+    model_name: str,
+    network_type: str,
+    lan_onnx: Path | None = None,
+    n_trials: int = 100,
+    seed: int = 0,
+) -> dict:
+    """A3: HSSM accepts the network as ``loglik_missing_data`` and gets a
+    finite initial logp, with and without the default lapse mixture.
+
+    opn: the base model is simulated first so the deadline can be its median
+    RT — about half the trials then omit, which exercises both branches of
+    HSSM's assembled likelihood. cpn: every 5th trial has its rt blanked to
+    the missing marker while its response is kept, which is the shape of a
+    choice-only row.
+
+    The base LAN is resolved by name through HSSM (a download for registry
+    models) unless ``lan_onnx`` points at one; models outside HSSM's registry
+    need it, since there is nothing to download.
+    """
+    if network_type == "cpn":
+        supported, installed = _hssm_version_supports_cpn_response()
+        if not supported:
+            return _result(
+                "hssm_missing_load",
+                True,
+                skipped=True,
+                reason=HSSM_CPN_SKIP_REASON,
+                hssm_version=installed,
+            )
+
+    try:
+        import hssm
+        import pandas as pd
+        import ssms
+
+        rng = np.random.default_rng(seed)
+        model_config = ssms.config.model_config[model_name]
+        theta = _draw_theta(model_config, rng)
+        rts, choices = _simulate(model_name, theta, n_trials, seed)
+
+        hssm_kwargs: dict[str, Any] = {
+            "missing_data": True,
+            "loglik_missing_data": str(onnx_path),
+            **_hssm_model_kwargs(model_name, model_config),
+        }
+        if lan_onnx is not None:
+            hssm_kwargs["loglik"] = str(lan_onnx)
+            hssm_kwargs["loglik_kind"] = "approx_differentiable"
+        elif "model_config" in hssm_kwargs:
+            return _result(
+                "hssm_missing_load",
+                False,
+                error=(
+                    f"{model_name!r} is not in HSSM's registry, so there is no "
+                    "base LAN to download; pass --lan-onnx"
+                ),
+            )
+
+        if network_type == "opn":
+            deadline = float(np.median(rts))
+            rts, choices = _simulate(
+                f"{model_name}_deadline", np.append(theta, deadline), n_trials, seed
+            )
+            data = pd.DataFrame({"rt": rts, "response": choices, "deadline": deadline})
+            hssm_kwargs["deadline"] = True
+        elif network_type == "cpn":
+            rts = rts.copy()
+            rts[::5] = OMISSION_RT
+            data = pd.DataFrame({"rt": rts, "response": choices})
+        else:
+            raise ValueError(f"no HSSM missing-data consumer for {network_type!r}")
+
+        n_missing = int(np.sum(data["rt"] == OMISSION_RT))
+        initial_logp = {}
+        # 0.0 exercises the network alone; the default lapse is what a user
+        # who never touches p_outlier gets, and the mixture must not turn a
+        # finite marginal into NaN.
+        for p_outlier in (0.0, 0.05):
+            model = hssm.HSSM(
+                data=data,
+                model=model_name,
+                p_outlier=p_outlier,
+                **hssm_kwargs,
+            )
+            pymc_model = model.pymc_model
+            initial_logp[str(p_outlier)] = float(
+                pymc_model.compile_logp()(pymc_model.initial_point())
+            )
+    except Exception as e:  # noqa: BLE001
+        return _result("hssm_missing_load", False, error=f"{type(e).__name__}: {e}")
+
+    return _result(
+        "hssm_missing_load",
+        all(np.isfinite(v) for v in initial_logp.values()),
+        initial_logp_by_p_outlier=initial_logp,
+        n_trials=n_trials,
+        n_missing=n_missing,
+        lan=str(lan_onnx) if lan_onnx is not None else f"{model_name} (by name)",
+    )
+
+
+def aux_truth(
+    model_name: str,
+    network_type: str,
+    theta: np.ndarray,
+    *,
+    choice: float | None = None,
+    deadline: float | None = None,
+    n_sim: int = 100_000,
+    rng: np.random.Generator | None = None,
+) -> dict:
+    """Monte-Carlo truth for one auxiliary-network input row.
+
+    cpn: P(choice | θ) from the base model at max_t = AUX_MAX_T. Reported
+    twice — ``truth`` counts every trial, ``truth_rt_lt_max_t`` only those
+    that finished inside the window, because ssms does not censor the base
+    model at max_t while a derived CPN integrates only up to it (see the
+    module docstring). opn: P(rt > deadline | θ) as the omission rate of the
+    ``_deadline`` variant, read from ``rts`` — ssms marks an omission there
+    only, never in ``choices``.
+
+    ``truth_mc_se`` is the binomial standard error of the estimate, so a
+    caller can tell network error from simulation noise.
+    """
+    rng = np.random.default_rng(0) if rng is None else rng
+    random_state = int(rng.integers(2**31 - 1))
+    theta = np.asarray(theta, dtype=float)
+
+    if network_type == "cpn":
+        if choice is None:
+            raise ValueError("a cpn truth needs a choice")
+        rts, choices = _simulate(model_name, theta, n_sim, random_state)
+        hit = choices == choice
+        p = float(np.mean(hit))
+        extra = {"truth_rt_lt_max_t": float(np.mean(hit & (rts < AUX_MAX_T)))}
+    elif network_type == "opn":
+        if deadline is None:
+            raise ValueError("an opn truth needs a deadline")
+        rts, _ = _simulate(
+            f"{model_name}_deadline", np.append(theta, deadline), n_sim, random_state
+        )
+        p = float(np.mean(rts == OMISSION_RT))
+        extra = {}
+    else:
+        raise ValueError(f"no truth is defined for {network_type!r}")
+
+    return {
+        "truth": p,
+        "truth_mc_se": float(np.sqrt(p * (1.0 - p) / n_sim)),
+        "n_sim": n_sim,
+        **extra,
+    }
+
+
+def gate_accuracy(
+    onnx_path: Path,
+    model_name: str,
+    network_type: str,
+    n_param_draws: int = 20,
+    n_sim: int = 100_000,
+    shrink: float = 0.1,
+    mean_abs_max: float = DEFAULT_ACCURACY_MEAN_ABS_MAX,
+    max_abs_max: float = DEFAULT_ACCURACY_MAX_ABS_MAX,
+    seed: int = 0,
+) -> dict:
+    """A4: the network's probability tracks simulation across the box.
+
+    One (1, D) row per draw through onnxruntime, compared to aux_truth. cpn
+    cycles the choice code per draw over the model's declared choices so a
+    net that only learned the majority option is caught. opn takes its
+    deadline from the RT quantile at u ~ U(0.1, 0.9) of a base-model
+    simulation (clipped to ssms' deadline bounds): a deadline drawn uniformly
+    from those bounds makes most DDM draws trivially ≈ 0 and the comparison
+    says nothing.
+
+    Every output must be finite and ≤ 0 — a raw-logit export fails here
+    before any truth is simulated.
+    """
+    try:
+        import onnxruntime as ort
+        import ssms
+
+        rng = np.random.default_rng(seed)
+        model_config = ssms.config.model_config[model_name]
+        declared_choices = list(model_config["choices"])
+        session = ort.InferenceSession(str(onnx_path))
+        input_name = session.get_inputs()[0].name
+
+        per_draw = []
+        for draw in range(n_param_draws):
+            theta = _draw_theta(model_config, rng, shrink)
+            record: dict[str, Any] = {"theta": [float(x) for x in theta]}
+            if network_type == "cpn":
+                trailing = float(declared_choices[draw % len(declared_choices)])
+                record["choice"] = trailing
+                truth_kwargs = {"choice": trailing}
+            else:
+                base_rts, _ = _simulate(model_name, theta, 10_000, seed + draw)
+                u = rng.uniform(0.1, 0.9)
+                trailing = float(np.clip(np.quantile(base_rts, u), *DEADLINE_BOUNDS))
+                record["deadline"] = trailing
+                truth_kwargs = {"deadline": trailing}
+
+            row = np.append(theta, trailing).astype(np.float32).reshape(1, -1)
+            logp = float(session.run(None, {input_name: row})[0].reshape(-1)[0])
+            if not (np.isfinite(logp) and logp <= 0.0):
+                return _result(
+                    "accuracy",
+                    False,
+                    draw=draw,
+                    **record,
+                    error=(
+                        f"network output {logp} is not a log-probability; every "
+                        "output must be finite and <= 0 (a raw-logit export "
+                        "fails here)"
+                    ),
+                )
+
+            truth = aux_truth(
+                model_name, network_type, theta, n_sim=n_sim, rng=rng, **truth_kwargs
+            )
+            record.update(
+                network_logp=logp,
+                network_value=float(np.exp(logp)),
+                truth=truth["truth"],
+                truth_mc_se=truth["truth_mc_se"],
+                abs_error=abs(float(np.exp(logp)) - truth["truth"]),
+            )
+            if "truth_rt_lt_max_t" in truth:
+                record["truth_rt_lt_max_t"] = truth["truth_rt_lt_max_t"]
+            per_draw.append(record)
+    except Exception as e:  # noqa: BLE001
+        return _result("accuracy", False, error=f"{type(e).__name__}: {e}")
+
+    mean_abs = float(np.mean([d["abs_error"] for d in per_draw]))
+    max_abs = float(np.max([d["abs_error"] for d in per_draw]))
+    return _result(
+        "accuracy",
+        mean_abs <= mean_abs_max and max_abs <= max_abs_max,
+        mean_abs_error=mean_abs,
+        max_abs_error=max_abs,
+        mean_abs_max=mean_abs_max,
+        max_abs_max=max_abs_max,
+        n_param_draws=n_param_draws,
+        n_sim=n_sim,
+        draws=per_draw,
+    )
+
+
 def find_sibling(folder: Path, suffix: str) -> Path | None:
     """The single file in ``folder`` ending in ``suffix``, or None."""
     matches = sorted(p for p in folder.iterdir() if p.name.endswith(suffix))
     return matches[0] if len(matches) == 1 else None
+
+
+def resolve_aux_category(network_type: str, aux_category: str | None) -> str | None:
+    """The category an auxiliary network's trailing input encodes, validated.
+
+    None for a LAN. opn/gonogo have exactly one possibility and default to it;
+    cpn must be told, because the flag is the only record of what the network
+    was derived for.
+    """
+    allowed = AUX_CATEGORIES_BY_NETWORK_TYPE.get(network_type)
+    if allowed is None:
+        if aux_category is not None:
+            raise ValueError(
+                f"--aux-category applies to auxiliary networks only, not {network_type!r}."
+            )
+        return None
+    if aux_category is None:
+        if network_type == "cpn":
+            raise ValueError(
+                "--aux-category is required for a cpn: name what the network "
+                f"predicts, one of {list(allowed)}."
+            )
+        return allowed[0]
+    if aux_category not in allowed:
+        raise ValueError(
+            f"Unknown --aux-category {aux_category!r} for {network_type!r}; "
+            f"expected one of {list(allowed)}."
+        )
+    return aux_category
 
 
 def validate_network(
@@ -467,8 +879,13 @@ def validate_network(
     skip_density: bool = False,
     skip_hssm: bool = False,
     hellinger_ratio_max: float = DEFAULT_HELLINGER_RATIO_MAX,
+    aux_category: str | None = None,
+    lan_onnx: Path | None = None,
+    skip_accuracy: bool = False,
+    accuracy_mean_abs_max: float = DEFAULT_ACCURACY_MEAN_ABS_MAX,
+    accuracy_max_abs_max: float = DEFAULT_ACCURACY_MAX_ABS_MAX,
 ) -> dict:
-    """Run every gate and return the report."""
+    """Run every gate for the network type and return the report."""
     onnx_path = Path(onnx_path)
     folder = onnx_path.parent
 
@@ -479,6 +896,14 @@ def validate_network(
             f"Unknown network_type {network_type!r}; expected one of "
             f"{sorted(EXTRA_INPUTS_BY_NETWORK_TYPE)}."
         )
+    # The deadline variant is derived from the base model wherever it is
+    # needed; naming it here would double the deadline in every simulation.
+    if model_name.endswith("_deadline"):
+        raise ValueError(
+            f"--model-name must be the base model, not {model_name!r}: the "
+            "_deadline variant is derived internally for opn/gonogo."
+        )
+    aux_category = resolve_aux_category(network_type, aux_category)
 
     expected_input_dim = None
     try:
@@ -489,14 +914,19 @@ def validate_network(
     except Exception as e:  # noqa: BLE001 - an unknown model just weakens G1
         logger.warning(f"Could not resolve the parameter space for {model_name}: {e}")
 
-    gates = [gate_structure(onnx_path, expected_input_dim)]
+    gate_names = GATES_BY_NETWORK_TYPE[network_type]
+    gates = [
+        gate_structure(
+            onnx_path, expected_input_dim, INPUT_LAYOUT_BY_NETWORK_TYPE[network_type]
+        )
+    ]
     input_width = gates[0].get("input_width")
 
     if input_width is None:
         # Without a usable graph the remaining gates cannot say anything.
         gates += [
             _result(g, False, skipped=True, reason="structure gate failed")
-            for g in ("parity", "hssm_load", "density")
+            for g in gate_names[1:]
         ]
     else:
         gates.append(
@@ -507,24 +937,53 @@ def validate_network(
                 input_width,
             )
         )
-        gates.append(
-            _result("hssm_load", True, skipped=True, reason="--skip-hssm")
-            if skip_hssm
-            else gate_hssm_load(onnx_path, model_name)
-        )
-        gates.append(
-            _result("density", True, skipped=True, reason="--skip-density")
-            if skip_density
-            else gate_density(
-                onnx_path, model_name, hellinger_ratio_max=hellinger_ratio_max
+        if network_type == "lan":
+            gates.append(
+                _result("hssm_load", True, skipped=True, reason="--skip-hssm")
+                if skip_hssm
+                else gate_hssm_load(onnx_path, model_name)
             )
-        )
+            gates.append(
+                _result("density", True, skipped=True, reason="--skip-density")
+                if skip_density
+                else gate_density(
+                    onnx_path, model_name, hellinger_ratio_max=hellinger_ratio_max
+                )
+            )
+        elif network_type == "gonogo":
+            # Nothing in HSSM consumes a gonogo network, and without a consumer
+            # there is no truth to hold it to either. Reported, not silent, so
+            # the publisher can see exactly what was not checked.
+            gates += [
+                _result(g, True, skipped=True, reason=GONOGO_SKIP_REASON)
+                for g in ("hssm_missing_load", "accuracy")
+            ]
+        else:
+            gates.append(
+                _result("hssm_missing_load", True, skipped=True, reason="--skip-hssm")
+                if skip_hssm
+                else gate_hssm_missing_load(
+                    onnx_path, model_name, network_type, lan_onnx=lan_onnx
+                )
+            )
+            gates.append(
+                _result("accuracy", True, skipped=True, reason="--skip-accuracy")
+                if skip_accuracy
+                else gate_accuracy(
+                    onnx_path,
+                    model_name,
+                    network_type,
+                    mean_abs_max=accuracy_mean_abs_max,
+                    max_abs_max=accuracy_max_abs_max,
+                )
+            )
 
     return {
         "schema_version": 1,
         "onnx": str(onnx_path),
         "model": model_name,
         "network_type": network_type,
+        "aux_category": aux_category,
         "passed": all(g["passed"] for g in gates),
         "gates": gates,
     }
@@ -541,16 +1000,44 @@ def main(
             "parity gate unpickles the *_network_config.pickle sibling."
         ),
     ),
-    model_name: str = typer.Option(..., help="ssm-simulators model name, e.g. ddm."),
+    model_name: str = typer.Option(
+        ...,
+        help="ssm-simulators BASE model name, e.g. ddm (never a _deadline variant).",
+    ),
     network_type: str = typer.Option("lan", help="lan | cpn | opn | gonogo."),
+    aux_category: str | None = typer.Option(
+        None,
+        help=(
+            "What an auxiliary network's trailing input encodes. Required for "
+            "cpn (choice); opn/gonogo default to deadline."
+        ),
+    ),
+    lan_onnx: Path | None = typer.Option(
+        None,
+        exists=True,
+        dir_okay=False,
+        help=(
+            "Base LAN for the hssm_missing_load gate [default: HSSM resolves it "
+            "by model name]. Required for models outside HSSM's registry."
+        ),
+    ),
     report_path: Path | None = typer.Option(
         None, help="Where to write validation_report.json [default: next to the ONNX]."
     ),
     skip_density: bool = typer.Option(False, "--skip-density"),
     skip_hssm: bool = typer.Option(False, "--skip-hssm"),
+    skip_accuracy: bool = typer.Option(False, "--skip-accuracy"),
     hellinger_ratio_max: float = typer.Option(
         DEFAULT_HELLINGER_RATIO_MAX,
         help="Max Hellinger relative to the measured sampling floor.",
+    ),
+    accuracy_mean_abs_max: float = typer.Option(
+        DEFAULT_ACCURACY_MEAN_ABS_MAX,
+        help="Max mean |network - truth| over the accuracy gate's draws.",
+    ),
+    accuracy_max_abs_max: float = typer.Option(
+        DEFAULT_ACCURACY_MAX_ABS_MAX,
+        help="Max single-draw |network - truth| in the accuracy gate.",
     ),
     log_level: str = typer.Option("WARNING"),
 ):
@@ -568,6 +1055,11 @@ def main(
             skip_density=skip_density,
             skip_hssm=skip_hssm,
             hellinger_ratio_max=hellinger_ratio_max,
+            aux_category=aux_category,
+            lan_onnx=lan_onnx,
+            skip_accuracy=skip_accuracy,
+            accuracy_mean_abs_max=accuracy_mean_abs_max,
+            accuracy_max_abs_max=accuracy_max_abs_max,
         )
     except ValueError as e:
         raise typer.BadParameter(str(e)) from e
