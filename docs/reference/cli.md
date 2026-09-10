@@ -81,12 +81,17 @@ uv run python validation/validate_network.py --help
 | Option | Required/default | Meaning |
 | --- | --- | --- |
 | `--onnx-path PATH` | required | Trusted ONNX artifact; sibling config may be unpickled |
-| `--model-name TEXT` | required | ssm-simulators model name |
+| `--model-name TEXT` | required | ssm-simulators base model name; a `_deadline` variant is rejected |
 | `--network-type TEXT` | `lan` | `lan`, `cpn`, `opn`, or `gonogo` |
+| `--aux-category TEXT` | cpn: required; opn/gonogo: `deadline` | What an auxiliary network's trailing input encodes; `choice` for a cpn |
+| `--lan-onnx PATH` | resolved by name | Local base LAN for `hssm_missing_load`; required for models outside HSSM's registry |
 | `--report-path PATH` | next to ONNX | Detailed JSON report destination |
-| `--skip-density` | false | Mark density skipped |
-| `--skip-hssm` | false | Mark HSSM integration skipped |
+| `--skip-density` | false | Mark density skipped (LAN) |
+| `--skip-hssm` | false | Mark the HSSM integration gate skipped (`hssm_load` or `hssm_missing_load`) |
+| `--skip-accuracy` | false | Mark accuracy skipped (cpn/opn) |
 | `--hellinger-ratio-max FLOAT` | `3.0` | Maximum density error relative to sampling floor |
+| `--accuracy-mean-abs-max FLOAT` | `0.01` | Maximum mean `|network − truth|` over the accuracy draws (provisional) |
+| `--accuracy-max-abs-max FLOAT` | `0.03` | Maximum single-draw `|network − truth|` (provisional) |
 | `--log-level TEXT` | `WARNING` | Logging threshold |
 
 ## Parameter-recovery worker

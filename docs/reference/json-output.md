@@ -71,9 +71,37 @@ when aggregate `passed` is false. For promotion, do not rely on that aggregate:
 the publisher additionally requires structure, HSSM load, and density to be
 present and not skipped.
 
-The detailed report has `schema_version: 1`, artifact/model/network identity,
-aggregate `passed`, and a `gates` list whose entries include thresholds, scores,
-errors, or skip reasons as applicable.
+An auxiliary network (`cpn`, `opn`, `gonogo`) reports a different gate set
+after `structure` and `parity`:
+
+```json
+{
+  "passed": true,
+  "report": "/staged/validation_report.json",
+  "gates": {
+    "structure": "passed",
+    "parity": "skipped",
+    "hssm_missing_load": "passed",
+    "accuracy": "passed"
+  }
+}
+```
+
+A gonogo network always reports `hssm_missing_load` and `accuracy` as
+`skipped` (HSSM has no gonogo consumer). A cpn reports `hssm_missing_load` as
+`skipped` under HSSM < 0.6.0, whose missing-data path ignores `response`.
+
+The detailed report has `schema_version: 1`, artifact/model/network identity
+(`onnx`, `model`, `network_type`, and `aux_category` — `null` for a LAN,
+`choice` for a cpn, `deadline` for an opn or gonogo), aggregate `passed`, and a
+`gates` list whose entries include thresholds, scores, errors, or skip reasons
+as applicable. In the auxiliary gates, `hssm_missing_load` records
+`initial_logp_by_p_outlier` (keys `"0.0"` and `"0.05"`), `n_trials`,
+`n_missing`, and the `lan` it was assembled with; `accuracy` records
+`mean_abs_error`, `max_abs_error`, the two thresholds it was judged against, and
+one `draws` entry per parameter draw with `theta`, the `choice` or `deadline`
+fed to the network, `network_logp`, `network_value`, `truth`, `truth_mc_se`,
+`abs_error`, and for a cpn `truth_rt_lt_max_t`.
 
 ## Parameter-recovery shard
 
