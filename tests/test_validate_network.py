@@ -6,6 +6,10 @@ network. The end-to-end test against the real production ddm.onnx is opt-in
 inference stack, which does not belong in the default suite.
 """
 
+import importlib.metadata
+import sys
+import types
+
 import numpy as np
 import onnx
 import pytest
@@ -290,6 +294,16 @@ class TestAuxiliaryWiring:
             "accuracy",
         ]
         assert report["network_type"] == network_type
+        assert (
+            report["aux_category"] == {"cpn": "choice", "opn": "deadline"}[network_type]
+        )
+        # The skips must actually take effect: a broken skip would leave this
+        # suite green while it imported HSSM and simulated 100k trials a draw.
+        gates = {g["gate"]: g for g in report["gates"]}
+        assert gates["hssm_missing_load"]["skipped"]
+        assert gates["hssm_missing_load"]["reason"] == "--skip-hssm"
+        assert gates["accuracy"]["skipped"]
+        assert gates["accuracy"]["reason"] == "--skip-accuracy"
 
     def test_opn_defaults_its_category_to_deadline(self, tmp_path):
         path = make_onnx(tmp_path / "opn.onnx", (1, 5))
@@ -305,6 +319,10 @@ class TestAuxiliaryWiring:
         for name in ("hssm_missing_load", "accuracy"):
             assert gates[name]["skipped"], name
             assert gates[name]["reason"] == GONOGO_SKIP_REASON
+            assert gates[name]["passed"], name
+        # A structurally valid gonogo with everything else skipped must not
+        # exit non-zero: a skip is a skip, not a veto.
+        assert report["passed"]
 
     def test_a_deadline_model_name_is_rejected(self, tmp_path):
         # The deadline variant is derived where it is needed; naming it would
@@ -319,6 +337,25 @@ class TestAuxiliaryWiring:
         path = make_onnx(tmp_path / "cpn.onnx", (1, 5))
         with pytest.raises(ValueError, match="--aux-category"):
             validate_network(path, model_name="ddm", network_type="cpn", **AUX_SKIPS)
+
+    @pytest.mark.parametrize(
+        "network_type, bad",
+        [("cpn", "deadline"), ("opn", "choice"), ("gonogo", "choice")],
+    )
+    def test_a_category_the_type_cannot_encode_is_rejected(
+        self, tmp_path, network_type, bad
+    ):
+        # Otherwise a cpn could be validated and published with
+        # aux_category="deadline" recorded in its report.
+        path = make_onnx(tmp_path / "aux.onnx", (1, 5))
+        with pytest.raises(ValueError, match="Unknown --aux-category"):
+            validate_network(
+                path,
+                model_name="ddm",
+                network_type=network_type,
+                aux_category=bad,
+                **AUX_SKIPS,
+            )
 
     def test_a_category_on_a_lan_is_rejected(self, tmp_path):
         path = make_onnx(tmp_path / "lan.onnx", (1, 6))
@@ -344,8 +381,9 @@ class TestAuxiliaryWiring:
     ):
         # Under the locked hssm 0.4.0 HSSM calls a CPN with the parameters
         # only, so a contract-conformant width n_params + 1 CPN cannot load.
-        # The gate must say so as a skip, and flip on by itself once the lock
-        # moves past 0.6.0 — hence the version is patched both ways here.
+        # The gate must say so as a skip. Only the below-0.6.0 direction is
+        # patched here; the supported direction drives the real gate against
+        # a stubbed hssm in TestHssmMissingLoadGate.
         path = make_onnx(tmp_path / "cpn.onnx", (1, 5))
         monkeypatch.setattr(
             vn, "_hssm_version_supports_cpn_response", lambda: (False, "0.4.0")
@@ -362,45 +400,272 @@ class TestAuxiliaryWiring:
         assert gate["reason"] == "HSSM < 0.6.0 ignores response on missing rows"
         assert gate["hssm_version"] == "0.4.0"
 
-    def test_the_real_version_check_reads_the_installed_hssm(self):
-        from importlib.metadata import version
+    @pytest.mark.parametrize(
+        "installed, supported",
+        [("0.5.9", False), ("0.6.0rc1", False), ("0.6.0", True), ("0.7.1", True)],
+    )
+    def test_the_version_gate_flips_exactly_at_0_6_0(
+        self, monkeypatch, installed, supported
+    ):
+        # Patched rather than read from the environment: CI installs without
+        # the validate group, and a real 0.4.0 could not see an off-by-one at
+        # the boundary anyway.
+        monkeypatch.setattr(importlib.metadata, "version", lambda name: installed)
+        assert vn._hssm_version_supports_cpn_response() == (supported, installed)
 
-        from packaging.version import Version
+    def test_validate_network_hands_the_accuracy_flags_and_type_to_the_gate(
+        self, tmp_path, monkeypatch
+    ):
+        # opn, so a hard-coded "cpn" in the wiring would show up in what the
+        # truth stub receives.
+        path = make_constant_onnx(tmp_path / "half.onnx", 5, np.log(0.5))
+        seen = []
 
-        supported, installed = vn._hssm_version_supports_cpn_response()
-        assert installed == version("hssm")
-        assert supported == (Version(installed) >= Version("0.6.0"))
+        def truth(model_name, network_type, theta, **kwargs):
+            seen.append(
+                (network_type, sorted(k for k in kwargs if k not in ("n_sim", "rng")))
+            )
+            return {"truth": 0.5, "truth_mc_se": 0.0016, "n_sim": 100_000}
+
+        monkeypatch.setattr(vn, "aux_truth", truth)
+        monkeypatch.setattr(
+            vn,
+            "_simulate",
+            lambda *a, **k: (np.linspace(0.3, 2.3, 10_000), np.ones(10_000)),
+        )
+        report = validate_network(
+            path,
+            model_name="ddm",
+            network_type="opn",
+            skip_hssm=True,
+            accuracy_mean_abs_max=0.011,
+            accuracy_max_abs_max=0.033,
+        )
+        gate = {g["gate"]: g for g in report["gates"]}["accuracy"]
+        assert not gate.get("skipped")
+        assert gate["passed"]
+        assert gate["mean_abs_max"] == 0.011 and gate["max_abs_max"] == 0.033
+        assert gate["n_param_draws"] == 20
+        assert seen and all(t == ("opn", ["deadline"]) for t in seen)
+
+
+def fixed_simulate(model_name, theta, n_samples, random_state, max_t=20.0):
+    """A stand-in simulator: RTs spread over (0.3, 2.3), choices alternating."""
+    return (
+        np.linspace(0.3, 2.3, n_samples),
+        np.where(np.arange(n_samples) % 2 == 0, 1.0, -1.0),
+    )
+
+
+@pytest.fixture
+def fake_hssm(monkeypatch):
+    """A stub ``hssm`` in sys.modules that records every HSSM(...) call.
+
+    Drives the real gate_hssm_missing_load without the inference stack: what
+    the gate hands HSSM (data layout, kwargs) is the contract under test, and
+    the logp it gets back is set on the fake's class.
+    """
+
+    class Calls(list):
+        cls = None
+
+    calls = Calls()
+
+    class FakePyMC:
+        def __init__(self, logp):
+            self._logp = logp
+
+        def compile_logp(self):
+            return lambda point: self._logp
+
+        def initial_point(self):
+            return {}
+
+    class FakeHSSM:
+        logp = -12.5
+
+        def __init__(self, data, model, p_outlier, **kwargs):
+            calls.append(
+                {"data": data, "model": model, "p_outlier": p_outlier, **kwargs}
+            )
+            self.pymc_model = FakePyMC(FakeHSSM.logp)
+
+    hssm = types.ModuleType("hssm")
+    hssm.HSSM = FakeHSSM
+    modelconfig = types.ModuleType("hssm.modelconfig")
+    modelconfig.list_models = lambda: ["ddm"]
+    hssm.modelconfig = modelconfig
+    monkeypatch.setitem(sys.modules, "hssm", hssm)
+    monkeypatch.setitem(sys.modules, "hssm.modelconfig", modelconfig)
+    calls.cls = FakeHSSM
+    return calls
+
+
+class TestHssmMissingLoadGate:
+    """gate_hssm_missing_load against a stubbed hssm and simulator."""
+
+    def test_cpn_blanks_every_fifth_rt_and_keeps_its_response(
+        self, tmp_path, monkeypatch, fake_hssm
+    ):
+        monkeypatch.setattr(
+            vn, "_hssm_version_supports_cpn_response", lambda: (True, "0.6.0")
+        )
+        monkeypatch.setattr(vn, "_simulate", fixed_simulate)
+        path = make_onnx(tmp_path / "cpn.onnx", (1, 5))
+        gate = vn.gate_hssm_missing_load(path, "ddm", "cpn", n_trials=100)
+        assert gate["passed"] and not gate.get("skipped")
+        assert gate["n_missing"] == 20
+        assert gate["initial_logp_by_p_outlier"] == {"0.0": -12.5, "0.05": -12.5}
+        assert [c["p_outlier"] for c in fake_hssm] == [0.0, 0.05]
+        data = fake_hssm[0]["data"]
+        assert (data["rt"].iloc[::5] == vn.OMISSION_RT).all()
+        mask = np.ones(100, dtype=bool)
+        mask[::5] = False
+        assert (data["rt"].to_numpy()[mask] > 0).all()
+        assert (
+            data["response"].tolist() == fixed_simulate("ddm", None, 100, 0)[1].tolist()
+        )
+        assert fake_hssm[0]["missing_data"] is True
+        assert fake_hssm[0]["loglik_missing_data"] == str(path)
+        assert "deadline" not in fake_hssm[0]
+
+    def test_opn_places_the_deadline_at_the_base_median_and_simulates_the_variant(
+        self, tmp_path, monkeypatch, fake_hssm
+    ):
+        seen = []
+
+        def simulate(model_name, theta, n_samples, random_state, max_t=20.0):
+            seen.append((model_name, np.asarray(theta).tolist()))
+            if model_name.endswith("_deadline"):
+                rts = np.where(np.arange(n_samples) % 2 == 0, vn.OMISSION_RT, 0.4)
+                return rts, np.ones(n_samples)
+            return fixed_simulate(model_name, theta, n_samples, random_state)
+
+        monkeypatch.setattr(vn, "_simulate", simulate)
+        path = make_onnx(tmp_path / "opn.onnx", (1, 5))
+        gate = vn.gate_hssm_missing_load(path, "ddm", "opn", n_trials=100)
+        assert gate["passed"]
+        assert [m for m, _ in seen] == ["ddm", "ddm_deadline"]
+        median = float(np.median(np.linspace(0.3, 2.3, 100)))
+        assert seen[1][1] == pytest.approx(seen[0][1] + [median])
+        assert gate["n_missing"] == 50
+        assert fake_hssm[0]["deadline"] is True
+        assert np.allclose(fake_hssm[0]["data"]["deadline"], median)
+
+    def test_by_name_pairs_the_net_with_the_base_lan_not_the_analytical_likelihood(
+        self, tmp_path, monkeypatch, fake_hssm
+    ):
+        # Without loglik_kind HSSM defaults ddm-family models to the analytical
+        # likelihood, and the jax LAN + aux-net assembly users hit would never
+        # have been exercised while the report claimed a LAN pairing.
+        monkeypatch.setattr(vn, "_simulate", fixed_simulate)
+        gate = vn.gate_hssm_missing_load(
+            make_onnx(tmp_path / "opn.onnx", (1, 5)), "ddm", "opn", n_trials=10
+        )
+        assert gate["passed"]
+        assert gate["lan"] == "ddm (by name)"
+        assert fake_hssm[0]["loglik_kind"] == "approx_differentiable"
+        assert "loglik" not in fake_hssm[0]
+        assert "model_config" not in fake_hssm[0]
+
+    def test_a_lan_path_is_handed_to_hssm_with_the_custom_model_config(
+        self, tmp_path, monkeypatch, fake_hssm
+    ):
+        monkeypatch.setattr(vn, "_simulate", fixed_simulate)
+        sys.modules["hssm.modelconfig"].list_models = lambda: []
+        lan = make_onnx(tmp_path / "ddm.onnx", (1, 6))
+        gate = vn.gate_hssm_missing_load(
+            make_onnx(tmp_path / "opn.onnx", (1, 5)), "ddm", "opn", lan_onnx=lan
+        )
+        assert gate["passed"]
+        assert gate["lan"] == str(lan)
+        call = fake_hssm[0]
+        assert call["loglik"] == str(lan)
+        assert call["loglik_kind"] == "approx_differentiable"
+        assert call["model_config"]["list_params"] == ["v", "a", "z", "t"]
+
+    def test_a_model_outside_the_registry_needs_a_lan_path(
+        self, tmp_path, monkeypatch, fake_hssm
+    ):
+        monkeypatch.setattr(vn, "_simulate", fixed_simulate)
+        sys.modules["hssm.modelconfig"].list_models = lambda: []
+        gate = vn.gate_hssm_missing_load(
+            make_onnx(tmp_path / "opn.onnx", (1, 5)), "ddm", "opn"
+        )
+        assert not gate["passed"]
+        assert "--lan-onnx" in gate["error"]
+        assert fake_hssm == []
+
+    def test_a_non_finite_logp_fails(self, tmp_path, monkeypatch, fake_hssm):
+        monkeypatch.setattr(vn, "_simulate", fixed_simulate)
+        fake_hssm.cls.logp = float("nan")
+        gate = vn.gate_hssm_missing_load(
+            make_onnx(tmp_path / "opn.onnx", (1, 5)), "ddm", "opn"
+        )
+        assert not gate["passed"]
+        assert "error" not in gate
+
+    def test_a_missing_hssm_is_a_failed_gate_not_a_traceback(
+        self, tmp_path, monkeypatch
+    ):
+        # The cpn version probe runs before HSSM is imported; without the
+        # validate group it must still land in the JSON as a failure.
+        def absent(name):
+            raise importlib.metadata.PackageNotFoundError(name)
+
+        monkeypatch.setattr(importlib.metadata, "version", absent)
+        gate = vn.gate_hssm_missing_load(
+            make_onnx(tmp_path / "cpn.onnx", (1, 5)), "ddm", "cpn"
+        )
+        assert not gate["passed"]
+        assert "validate dependency group" in gate["error"]
+
+    def test_gonogo_has_no_consumer_to_load_into(
+        self, tmp_path, monkeypatch, fake_hssm
+    ):
+        monkeypatch.setattr(vn, "_simulate", fixed_simulate)
+        gate = vn.gate_hssm_missing_load(
+            make_onnx(tmp_path / "gonogo.onnx", (1, 5)), "ddm", "gonogo"
+        )
+        assert not gate["passed"]
+        assert "gonogo" in gate["error"]
+        assert fake_hssm == []
 
 
 class TestAccuracyGate:
     """gate_accuracy against a bias-only graph and a monkeypatched truth.
 
-    cpn is used because its truth needs no simulation once patched; opn would
-    still simulate the base model to place its deadline.
+    cpn needs no simulation once the truth is patched; the opn tests also
+    patch _simulate, since the deadline is placed on a base-model simulation.
     """
 
     @staticmethod
-    def constant_truth(p):
+    def constant_truth(p, **extra):
         def fake_truth(model_name, network_type, theta, **kwargs):
             assert network_type == "cpn"
             assert "choice" in kwargs
-            return {"truth": p, "truth_mc_se": 0.0016, "n_sim": 100_000}
+            return {"truth": p, "truth_mc_se": 0.0016, "n_sim": 100_000, **extra}
 
         return fake_truth
 
     def test_passes_when_the_network_matches_the_truth(self, tmp_path, monkeypatch):
         path = make_constant_onnx(tmp_path / "half.onnx", 5, np.log(0.5))
-        monkeypatch.setattr(vn, "aux_truth", self.constant_truth(0.5))
+        monkeypatch.setattr(
+            vn, "aux_truth", self.constant_truth(0.5, truth_rt_lt_max_t=0.49)
+        )
         result = gate_accuracy(path, "ddm", "cpn", n_param_draws=4)
         assert result["passed"], result
         assert result["max_abs_error"] == pytest.approx(0.0, abs=1e-6)
         assert len(result["draws"]) == 4
         # Every record carries what a reader needs to tell network error from
-        # simulation noise.
+        # simulation noise, plus the cpn-only windowed proportion.
         for draw in result["draws"]:
             assert draw["truth_mc_se"] == 0.0016
             assert draw["truth"] == 0.5
+            assert draw["truth_rt_lt_max_t"] == 0.49
+            assert draw["network_logp"] == pytest.approx(np.log(0.5), abs=1e-6)
             assert draw["network_value"] == pytest.approx(0.5, abs=1e-6)
+            assert draw["abs_error"] == pytest.approx(0.0, abs=1e-6)
             assert len(draw["theta"]) == 4
         # The choice code cycles over the model's declared choices.
         assert [d["choice"] for d in result["draws"]] == [-1.0, 1.0, -1.0, 1.0]
@@ -413,6 +678,25 @@ class TestAccuracyGate:
         assert result["mean_abs_error"] == pytest.approx(0.4, abs=1e-6)
         assert result["mean_abs_max"] == vn.DEFAULT_ACCURACY_MEAN_ABS_MAX
         assert result["max_abs_max"] == vn.DEFAULT_ACCURACY_MAX_ABS_MAX
+
+    def test_one_bad_draw_fails_on_max_even_when_the_mean_is_fine(
+        self, tmp_path, monkeypatch
+    ):
+        # A constant truth cannot separate the two bounds (mean == max), so
+        # the truth varies with the cycled choice: -1 exact, +1 off by 0.04.
+        path = make_constant_onnx(tmp_path / "half.onnx", 5, np.log(0.5))
+
+        def truth(model_name, network_type, theta, **kwargs):
+            p = 0.5 if kwargs["choice"] == -1.0 else 0.54
+            return {"truth": p, "truth_mc_se": 0.0016, "n_sim": 100_000}
+
+        monkeypatch.setattr(vn, "aux_truth", truth)
+        result = gate_accuracy(
+            path, "ddm", "cpn", n_param_draws=4, mean_abs_max=0.05, max_abs_max=0.03
+        )
+        assert result["mean_abs_error"] == pytest.approx(0.02, abs=1e-6)
+        assert result["max_abs_error"] == pytest.approx(0.04, abs=1e-6)
+        assert not result["passed"]
 
     def test_thresholds_are_parameters_not_constants(self, tmp_path, monkeypatch):
         path = make_constant_onnx(tmp_path / "half.onnx", 5, np.log(0.5))
@@ -442,6 +726,55 @@ class TestAccuracyGate:
         result = gate_accuracy(path, "ddm", "cpn", n_param_draws=1)
         assert not result["passed"]
         assert "finite and <= 0" in result["error"]
+
+    def test_a_certain_prediction_of_exactly_zero_logp_is_accepted(
+        self, tmp_path, monkeypatch
+    ):
+        # A confident float32 log-sigmoid rounds to exactly 0.0 (P = 1); the
+        # contract is <= 0, and a strict < 0 would reject such a network.
+        path = make_constant_onnx(tmp_path / "one.onnx", 5, 0.0)
+        monkeypatch.setattr(vn, "aux_truth", self.constant_truth(1.0))
+        result = gate_accuracy(path, "ddm", "cpn", n_param_draws=2)
+        assert result["passed"], result
+        assert "error" not in result
+
+    def test_opn_deadline_is_clipped_to_ssms_bounds_and_shared_with_the_truth(
+        self, tmp_path, monkeypatch
+    ):
+        path = make_constant_onnx(tmp_path / "half.onnx", 5, np.log(0.5))
+        asked = []
+
+        def truth(model_name, network_type, theta, **kwargs):
+            asked.append(kwargs["deadline"])
+            return {"truth": 0.5, "truth_mc_se": 0.0016, "n_sim": 100_000}
+
+        monkeypatch.setattr(vn, "aux_truth", truth)
+        # Every base RT past the deadline ceiling: the quantile must be clipped.
+        monkeypatch.setattr(
+            vn, "_simulate", lambda *a, **k: (np.full(10_000, 50.0), np.ones(10_000))
+        )
+        result = gate_accuracy(path, "ddm", "opn", n_param_draws=3)
+        ceiling = vn.DEADLINE_BOUNDS[1]
+        assert [d["deadline"] for d in result["draws"]] == [ceiling] * 3
+        assert asked == [ceiling] * 3
+        assert all("choice" not in d for d in result["draws"])
+
+    def test_opn_deadline_sits_inside_the_base_rt_spread(self, tmp_path, monkeypatch):
+        path = make_constant_onnx(tmp_path / "half.onnx", 5, np.log(0.5))
+        monkeypatch.setattr(
+            vn,
+            "aux_truth",
+            lambda *a, **k: {"truth": 0.5, "truth_mc_se": 0.0016, "n_sim": 100_000},
+        )
+        monkeypatch.setattr(
+            vn,
+            "_simulate",
+            lambda *a, **k: (np.linspace(0.3, 2.3, 10_000), np.ones(10_000)),
+        )
+        result = gate_accuracy(path, "ddm", "opn", n_param_draws=5)
+        # The quantile at u ~ U(0.1, 0.9) of RTs spread over (0.3, 2.3).
+        for d in result["draws"]:
+            assert 0.5 <= d["deadline"] <= 2.1
 
 
 class TestAuxTruth:
