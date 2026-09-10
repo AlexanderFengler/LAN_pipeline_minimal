@@ -56,7 +56,6 @@ from pathlib import Path
 
 import click
 import typer
-import yaml
 
 logger = logging.getLogger("publish_network")
 
@@ -506,18 +505,29 @@ def _card_number(value: object, digits: int = 4) -> str:
     return f"{float(value):.{digits}g}" if value is not None else "n/a"
 
 
-class _BlockScalarDumper(yaml.SafeDumper):
-    """Multi-line strings as ``|`` blocks: the card is reviewed by eye before
-    the real publish, and a description folded into a quoted scalar with
-    doubled apostrophes is not something a reviewer can read."""
+def _dump_card(card: Mapping[str, object]) -> str:
+    """The card as YAML, multi-line strings as ``|`` blocks.
 
+    The card is reviewed by eye before the real publish, and a description
+    folded into a quoted scalar with doubled apostrophes is not something a
+    reviewer can read. yaml is imported here, not at module level: pyproject
+    does not declare PyYAML (it arrives through mlflow and huggingface-hub),
+    and the publisher's import-time surface should not lean on that path any
+    more than it has to.
+    """
+    import yaml
 
-def _represent_str(dumper: yaml.SafeDumper, value: str) -> yaml.ScalarNode:
-    style = "|" if "\n" in value else None
-    return dumper.represent_scalar("tag:yaml.org,2002:str", value, style=style)
+    class BlockScalarDumper(yaml.SafeDumper):
+        pass
 
+    def represent_str(dumper: yaml.SafeDumper, value: str) -> yaml.ScalarNode:
+        style = "|" if "\n" in value else None
+        return dumper.represent_scalar("tag:yaml.org,2002:str", value, style=style)
 
-_BlockScalarDumper.add_representer(str, _represent_str)
+    BlockScalarDumper.add_representer(str, represent_str)
+    return yaml.dump(
+        dict(card), Dumper=BlockScalarDumper, sort_keys=False, allow_unicode=True
+    )
 
 
 def write_aux_model_card(
@@ -526,6 +536,7 @@ def write_aux_model_card(
     network_type: str,
     provenance: Mapping[str, str],
     report: Mapping,
+    training_tags: Mapping[str, str] | None = None,
 ) -> Path:
     """Write ``model_card.yaml`` for an auxiliary network into the staging dir.
 
@@ -533,9 +544,13 @@ def write_aux_model_card(
     LANfactory's card renderer reads (title, tags, library_name, license,
     description, usage_example); architecture and training are left out so
     the renderer fills them from the pickled configs, which are the
-    authoritative record. The result is round-tripped through LANfactory's
-    loader before it is accepted, so a card that would crash the upload is
-    caught here, on the laptop, not halfway through a commit to the Hub.
+    authoritative record. ``training_tags`` are the tags forwarded from the
+    training run (``forwarded_tags``): the ``derive_total_mass_*`` values are
+    quoted in the tail-policy paragraph when present, and their absence is
+    stated rather than papered over. The result is round-tripped through
+    LANfactory's loader before it is accepted, so a card that would crash the
+    upload is caught here, on the laptop, not halfway through a commit to the
+    Hub.
     """
     from lanfactory.hf import DEFAULT_LICENSE
 
@@ -596,6 +611,27 @@ def write_aux_model_card(
             ")\n"
         )
 
+    # The tail-policy record, only claimed when the training run carries it:
+    # forwarded_tags forwards these tags when present, so a card saying they
+    # are "recorded on the training and publish runs" would be false for a
+    # run that has none.
+    masses = {
+        stat: (training_tags or {}).get(f"derive_total_mass_{stat}")
+        for stat in ("mean", "min", "max")
+    }
+    if all(masses.values()):
+        tail_record = (
+            "the derived corpus's per-file total mass is recorded on the training "
+            "and publish runs as derive_total_mass_{mean,min,max} = "
+            f"{_card_number(masses['mean'])} / {_card_number(masses['min'])} / "
+            f"{_card_number(masses['max'])}."
+        )
+    else:
+        tail_record = (
+            "the training run carries no derive_total_mass_{mean,min,max} tags, "
+            "so the derived corpus's per-file total mass is not recorded here."
+        )
+
     description = "\n\n".join(
         [
             what,
@@ -615,8 +651,7 @@ def write_aux_model_card(
             f"Monte-Carlo truth with standard error ≤ {_card_number(truth_se)} "
             f"(n_sim = {accuracy.get('n_sim', 'n/a')} per draw).",
             "Tail policy: the source LAN's mass past max_t is not renormalised "
-            "away; the derived corpus's per-file total mass is recorded on the "
-            "training and publish runs as derive_total_mass_{mean,min,max}.",
+            f"away; {tail_record}",
         ]
     )
     card = {
@@ -634,9 +669,10 @@ def write_aux_model_card(
         "usage_example": usage,
     }
     path = Path(staging_dir) / MODEL_CARD
-    path.write_text(
-        yaml.dump(card, Dumper=_BlockScalarDumper, sort_keys=False, allow_unicode=True)
-    )
+    # utf-8 explicitly: the description carries θ, ≤ and a real minus sign,
+    # and a UnicodeEncodeError under a non-UTF-8 locale is not a PublishError,
+    # so it would escape main's handler without the JSON line.
+    path.write_text(_dump_card(card), encoding="utf-8")
 
     # The loader that will run at upload time, on the file it will read.
     try:
@@ -1058,7 +1094,9 @@ def run_publish(
         # operator did not stage a card of their own (stage_artifacts has
         # already copied or removed that one).
         if ok and provenance and not (staging / MODEL_CARD).exists():
-            write_aux_model_card(staging, model, network_type, provenance, report)
+            write_aux_model_card(
+                staging, model, network_type, provenance, report, training_tags
+            )
         root_name = canonical_root_filename(network_type, model)
         plan = {
             "model": model,

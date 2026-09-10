@@ -288,7 +288,7 @@ class TestAuxProvenance:
 class TestAuxModelCard:
     """The card generated when the operator staged none."""
 
-    def load(self, tmp_path, network_type):
+    def load(self, tmp_path, network_type, training_tags=None):
         import yaml
 
         provenance = {
@@ -296,13 +296,24 @@ class TestAuxModelCard:
             "aux_category": "choice" if network_type == "cpn" else "omission",
         }
         path = write_aux_model_card(
-            tmp_path, "ddm_sdv", network_type, provenance, aux_report(network_type)
+            tmp_path,
+            "ddm_sdv",
+            network_type,
+            provenance,
+            aux_report(network_type),
+            training_tags,
         )
         assert path == tmp_path / "model_card.yaml"
-        return yaml.safe_load(path.read_text())
+        return yaml.safe_load(path.read_text(encoding="utf-8"))
 
     def test_the_cpn_card_names_its_source_and_contract(self, tmp_path):
         card = self.load(tmp_path, "cpn")
+        # Multi-line strings as `|` blocks, pinned on the raw text: safe_load
+        # erases the scalar style, and a description folded into a quoted
+        # scalar with doubled apostrophes is not something a reviewer reads.
+        raw = (tmp_path / "model_card.yaml").read_text(encoding="utf-8")
+        assert "description: |" in raw and "usage_example: |" in raw
+        assert "''" not in raw
         assert card["title"] == "ddm_sdv (CPN)"
         assert card["license"] == "bsd-2-clause"
         assert card["library_name"] == "onnx"
@@ -343,18 +354,51 @@ class TestAuxModelCard:
         assert f"# ddm_sdv ({network_type.upper()})" in readme
         assert "missing_data=True" in readme
 
+    @pytest.mark.parametrize(
+        "error",
+        [
+            ValueError("'architecture' must be a mapping"),
+            KeyError("license"),
+            TypeError("bad tag"),
+        ],
+        ids=lambda e: type(e).__name__,
+    )
     def test_a_card_lanfactory_would_reject_is_refused_and_removed(
-        self, tmp_path, monkeypatch
+        self, tmp_path, monkeypatch, error
     ):
+        # The guard catches whatever the loader raises -- the breadth is the
+        # point, since any of these would surface halfway into a Hub commit.
         import lanfactory.hf.model_card as model_card
 
         def reject(folder):
-            raise ValueError("'architecture' must be a mapping")
+            raise error
 
         monkeypatch.setattr(model_card, "load_model_card_yaml", reject)
         with pytest.raises(PublishError, match="would fail upload"):
             write_aux_model_card(tmp_path, "ddm_sdv", "cpn", PROVENANCE, aux_report())
         assert not (tmp_path / "model_card.yaml").exists()
+
+    def test_the_tail_policy_quotes_the_masses_only_when_recorded(self, tmp_path):
+        # forwarded_tags only forwards derive_total_mass_* when present, so a
+        # card claiming they are "recorded on the training and publish runs"
+        # would be false for a run without them.
+        without = self.load(tmp_path, "cpn")["description"]
+        assert "not renormalised" in without
+        assert "carries no derive_total_mass" in without
+
+        tags = {
+            "derive_total_mass_mean": "0.998",
+            "derive_total_mass_min": "0.990",
+            "derive_total_mass_max": "1.0",
+        }
+        with_tags = self.load(tmp_path, "cpn", tags)["description"]
+        assert "not renormalised" in with_tags
+        assert "0.998 / 0.99 / 1" in with_tags
+        assert "carries no derive_total_mass" not in with_tags
+
+        # One tag alone is not a record; the statement stays honest.
+        partial = self.load(tmp_path, "cpn", {"derive_total_mass_mean": "0.998"})
+        assert "carries no derive_total_mass" in partial["description"]
 
     def test_a_card_without_gate_numbers_still_renders(self, tmp_path):
         # Defensive only: the card is written after the verdict, so a report
@@ -1236,8 +1280,10 @@ class TestAuxiliaryPublish:
         assert plan["root_filename"] == "ddm_sdv_cpn.onnx"
         assert "model_card.yaml" in plan["staged"]
         assert "validation_report.json" in plan["staged"]
-        card = yaml.safe_load((staged / "model_card.yaml").read_text())
+        card = yaml.safe_load((staged / "model_card.yaml").read_text(encoding="utf-8"))
         assert card["title"] == "ddm_sdv (CPN)"
+        # The training run's mass tags reached the card, not just the record.
+        assert "0.998 / 0.99 / 1" in card["description"]
         assert stubs["upload"] == []
 
     def test_an_operator_card_is_never_overwritten(self, tmp_path, store, stubs):
