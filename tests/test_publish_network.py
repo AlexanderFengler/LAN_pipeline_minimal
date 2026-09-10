@@ -229,9 +229,34 @@ class TestAuxProvenance:
         # here, and the message must say what to do about it.
         assert "simulated corpus" in str(excinfo.value)
 
-    def test_an_empty_value_counts_as_missing(self):
-        with pytest.raises(PublishError, match="source_lan_sha256"):
-            aux_provenance({**PROVENANCE, "source_lan_sha256": ""}, "cpn")
+    @pytest.mark.parametrize("absent", ["", "None", "null", " "])
+    def test_an_empty_or_none_value_counts_as_missing(self, absent):
+        # MLflow stores a param logged as None as the string "None": a corpus
+        # derived from a local ONNX with no Hub revision would otherwise pass
+        # and publish with source_lan_hf_commit="None" on the run and card.
+        with pytest.raises(PublishError, match="source_lan_hf_commit"):
+            aux_provenance({**PROVENANCE, "source_lan_hf_commit": absent}, "cpn")
+
+    def test_a_none_valued_optional_key_is_left_out(self):
+        params = {**PROVENANCE, "source_lan_run_id": "None"}
+        assert "source_lan_run_id" not in aux_provenance(params, "cpn")
+
+    def test_a_gonogo_has_no_provenance_to_read(self):
+        # run_publish refuses a gonogo before it gets here; the function must
+        # not be the thing that refuses it, or the message would be "relabel
+        # your provenance" for a network that can never ship.
+        assert aux_provenance({}, "gonogo") == {}
+
+    def test_trained_from_simulation_is_recognised_but_not_publishable(self):
+        # The contract allows the value, but no writer emits it and the card
+        # would assert a LAN lineage the network does not have.
+        with pytest.raises(PublishError, match="trained-from-simulation") as excinfo:
+            aux_provenance(
+                {**PROVENANCE, "derivation_method": "trained-from-simulation"},
+                "cpn",
+            )
+        assert "no publish path" in str(excinfo.value)
+        assert "derived-from-lan" in str(excinfo.value)
 
     def test_a_mis_categorised_network_is_refused(self):
         # A cpn is published as ddm_sdv_cpn.onnx and HSSM feeds it a choice;

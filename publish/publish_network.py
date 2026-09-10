@@ -108,7 +108,15 @@ AUX_PROVENANCE_KEYS = (
     "integration_max_t",
 )
 AUX_PROVENANCE_OPTIONAL_KEYS = ("source_lan_run_id",)
+# The contract's vocabulary, and the subset this module can publish. Only a
+# derived-from-lan run has the source_lan_* / integration_* keys the card is
+# written from; no writer emits "trained-from-simulation" yet, and publishing
+# one through this path would put a LAN lineage on a network that has none.
 DERIVATION_METHODS = ("derived-from-lan", "trained-from-simulation")
+PUBLISHABLE_DERIVATION_METHODS = ("derived-from-lan",)
+# What MLflow stores for a param that was logged as None (log_params
+# stringifies it), plus the spellings a hand-relabelled run might use.
+_ABSENT_PARAM_VALUES = frozenset({"", "None", "null"})
 # Tags on the training run that travel to the publish run when present: the
 # per-file total mass of the derived corpus (the tail-policy record — masses
 # are not renormalised) and where the corpus came from.
@@ -425,18 +433,30 @@ def gate_verdict(report: dict) -> tuple[bool, str]:
     return True, "all required gates ran and passed"
 
 
+def _present(value: object) -> bool:
+    """Whether a param value carries information.
+
+    MLflow stores a param logged as ``None`` as the string ``"None"``, so a
+    corpus derived from a local ONNX with no Hub revision would otherwise pass
+    the required-key check and publish with ``source_lan_hf_commit="None"`` on
+    the run and on the card.
+    """
+    return value is not None and str(value).strip() not in _ABSENT_PARAM_VALUES
+
+
 def aux_provenance(params: Mapping[str, str], network_type: str) -> dict[str, str]:
     """The derivation provenance an auxiliary network must publish with.
 
     Read from the training run's params, where LANfactory logs them for a run
-    started from a derived corpus. A LAN has none and gets ``{}``. A cpn/opn
-    run without them is refused by the first missing key: a run trained from
-    a simulated corpus carries none of these, and until it is relabelled its
-    network has no source LAN to be traced to.
+    started from a derived corpus. A LAN (or anything else that is not a
+    cpn/opn) has none and gets ``{}``. A cpn/opn run without them is refused
+    by the first missing key: a run trained from a simulated corpus carries
+    none of these, and until it is relabelled its network has no source LAN
+    to be traced to. An empty, ``None`` or ``null`` value counts as missing.
     """
     if network_type not in AUX_CATEGORY_BY_NETWORK_TYPE:
         return {}
-    missing = [key for key in AUX_PROVENANCE_KEYS if not params.get(key)]
+    missing = [key for key in AUX_PROVENANCE_KEYS if not _present(params.get(key))]
     if missing:
         raise PublishError(
             f"Training run has no {missing[0]!r} param, so the {network_type}'s "
@@ -446,10 +466,18 @@ def aux_provenance(params: Mapping[str, str], network_type: str) -> dict[str, st
             "LAN's identity before publishing."
         )
     provenance = {key: str(params[key]) for key in AUX_PROVENANCE_KEYS}
-    if provenance["derivation_method"] not in DERIVATION_METHODS:
+    method = provenance["derivation_method"]
+    if method not in DERIVATION_METHODS:
         raise PublishError(
-            f"derivation_method {provenance['derivation_method']!r} is not one "
-            f"of {list(DERIVATION_METHODS)}."
+            f"derivation_method {method!r} is not one of {list(DERIVATION_METHODS)}."
+        )
+    if method not in PUBLISHABLE_DERIVATION_METHODS:
+        raise PublishError(
+            f"derivation_method {method!r} has no publish path yet: the "
+            "generated card names the source LAN's sha256, run_uuid, Hub "
+            "commit and integration grid, which a network trained from "
+            "simulation does not have. Only "
+            f"{', '.join(PUBLISHABLE_DERIVATION_METHODS)} publishes."
         )
     expected = AUX_CATEGORY_BY_NETWORK_TYPE[network_type]
     if provenance["aux_category"] != expected:
@@ -463,7 +491,7 @@ def aux_provenance(params: Mapping[str, str], network_type: str) -> dict[str, st
         {
             key: str(params[key])
             for key in AUX_PROVENANCE_OPTIONAL_KEYS
-            if params.get(key)
+            if _present(params.get(key))
         }
     )
     return provenance
