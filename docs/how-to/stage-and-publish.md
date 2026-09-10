@@ -101,15 +101,17 @@ it cannot name. LANfactory logs these params on a training run started from a
 
 | Param | Value |
 | --- | --- |
-| `derivation_method` | `derived-from-lan` or `trained-from-simulation` |
+| `derivation_method` | `derived-from-lan`; the contract also names `trained-from-simulation`, which no writer emits yet and the publisher refuses, since the generated card would assert a LAN lineage |
 | `aux_category` | `choice` for a cpn, `omission` for an opn |
 | `source_lan_run_uuid`, `source_lan_sha256`, `source_lan_hf_commit` | The LAN the corpus was integrated from |
 | `integration_grid`, `integration_max_t` | The quadrature the corpus was built on |
 | `source_lan_run_id` | Optional: the LAN's MLflow training run |
 
 A run started from a simulated corpus carries none of them and is refused,
-naming the first missing key, before anything is staged. Relabel it with the
-source LAN's identity, or retrain from a derived corpus. A run whose
+naming the first missing key, before anything is staged. An empty value, or
+the string `None` MLflow stores for a param logged as `None`, counts as
+missing. Relabel it with the source LAN's identity, or retrain from a derived
+corpus. A run whose
 `aux_category` does not match its type (a `cpn` labelled `omission`) is
 refused too: it was derived for something other than what its root filename
 would promise.
@@ -138,11 +140,16 @@ folder is staged instead and never overwritten.
 uv run lan-publish \
   --hf-repo your-org/HSSM_staging \
   --run-id "$CPN_TRAINING_RUN_ID" \
-  --artifact-dir /local/path/to/derived/cpn/ddm_sdv \
+  --artifact-dir /local/path/to/trained/cpn/ddm_sdv \
   --staging-dir /local/path/to/staged-cpn \
   --lan-onnx /local/path/to/ddm_sdv.onnx \
   --dry-run
 ```
+
+`--artifact-dir` is the trainer's output folder for the run
+(`<output_path>/cpn/<model>`), not the `derive-aux` corpus the training config
+points at; the publisher looks for artifacts carrying the run's `run_uuid`
+there.
 
 The dry-run plan gains a `provenance` block and lists the generated
 `model_card.yaml` under `staged`; open it before repeating without
@@ -150,8 +157,10 @@ The dry-run plan gains a `provenance` block and lists the generated
 run identity, forwards the training run's `derive_total_mass_*` and
 `data_origin` tags, and logs the accuracy and missing-load scores as metrics.
 
-Two refusals are absolute. A `gonogo` network is never published: nothing in
-HSSM consumes one, and a root filename on the Hub is permanent. A `_deadline`
+Two refusals are absolute, and both fire before provenance is read or anything
+is staged. A `gonogo` network is never published: nothing in HSSM consumes
+one, and a root filename on the Hub is permanent -- a gonogo run without
+provenance gets this refusal, not an instruction to relabel it. A `_deadline`
 model name is refused: the deadline variant is derived internally wherever a
 simulation needs it, and HSSM never asks for `ddm_sdv_deadline_opn.onnx`.
 Publish under the base model.

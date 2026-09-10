@@ -10,6 +10,10 @@
 # probability out. Fine on a CPU in minutes at this corpus size.
 MODEL: "ddm_sdv"
 NETWORK_TYPE: "opn"
+# Unused by every consumer (nothing in this repo or LANfactory reads the
+# key); kept as "lan" for schema parity with production_ddm_sdv. The
+# corpus itself records generator_approach "derived" in its own
+# generator_config, which is the authoritative description.
 GENERATOR_APPROACH: "lan"
 
 LAYER_SIZES: [[100, 100, 100, 1]]

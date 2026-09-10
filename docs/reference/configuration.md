@@ -63,7 +63,12 @@ LANfactory's `derive-aux` integrates from the model's published LAN. There is
 no generation file to pair with, so the prefix keeps the directory out of the
 production checks; its own tests require the batch size to divide a derived
 file's rows (4096 parameter sets per file, one row per choice for a cpn),
-because the Torch loader refuses any remainder at load time.
+because the Torch loader refuses any remainder at load time. The current
+derived directories are:
+
+| Directory | Model | Networks |
+| --- | --- | --- |
+| `configs/derived_ddm_sdv/` | `ddm_sdv` | cpn, opn |
 
 Run `uv run pytest tests/test_production_configs.py -q` after adding or changing
 a versioned pair or a derived config. These checks protect contextual reproducibility; the upstream

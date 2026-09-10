@@ -11,6 +11,10 @@ next run un-reproducible from the repo.
 
 These are cheap structural checks, not a schema. The pipeline's own loaders own
 the schema; this owns the things that are only wrong in context.
+
+It also owns `derived_<model>/network_training_{cpn,opn}.yaml`, which have no
+generation pair and are checked against derive-aux's fixed rows-per-file
+instead.
 """
 
 import re

@@ -78,12 +78,16 @@ refuses an auxiliary training run that does not name its source LAN
 wrong-model ONNX is: the file would carry a root filename that promises
 something else.
 
-Two refusals are governance decisions rather than checks. A `gonogo` network is
-never published, because nothing in HSSM consumes one and a root filename on
-the Hub is permanent -- publishing it would reserve `{model}_gonogo.onnx` for a
-network no release can load. A `_deadline` model name is refused because HSSM
-builds the root filename from the base model, so a network published under the
-variant is unreachable and its name cannot be taken back.
+Two refusals are governance decisions rather than checks, and both come before
+the provenance check, staging, and validation. A `gonogo` network is never
+published, because nothing in HSSM consumes one and a root filename on the Hub
+is permanent -- publishing it would reserve `{model}_gonogo.onnx` for a network
+no release can load. Refusing it first matters: a gonogo built from simulation
+has no provenance either, and the refusal it gets must be the one that applies
+to it, not an instruction to relabel a network that can never ship. A
+`_deadline` model name is refused because HSSM builds the root filename from
+the base model, so a network published under the variant is unreachable and
+its name cannot be taken back.
 
 ### 7. Explicit replacement and verifiable records
 
@@ -118,8 +122,9 @@ they cannot be collapsed into an ordinary CLI invocation.
 | Density failure | Inspect KDE/manifold plots and revisit training data or model quality |
 | Existing root artifact | Review the target and use `--overwrite-root` only for an intentional replacement |
 | Production-repository refusal | Complete the separate staging review and governed promotion process |
-| Missing provenance key | Relabel the training run with its source LAN's identity, or retrain from a `derive-aux` corpus |
+| Missing provenance key (cpn, opn) | Relabel the training run with its source LAN's identity, or retrain from a `derive-aux` corpus; an empty or `None` value counts as missing |
+| Unknown or unpublishable `derivation_method` | Only `derived-from-lan` publishes; `trained-from-simulation` is recognised but has no publish path, and anything else is a mislabel -- relabel the run |
 | `aux_category` mismatch | The run was derived for another category; derive and train the right one |
 | HSSM-missing-load skipped (cpn) | The locked HSSM is older than 0.6.0; wait for the release that feeds `response` to a cpn |
 | Accuracy failure | Compare against the source LAN's density gate; the error is inherited or the corpus is wrong |
-| gonogo or `_deadline` refusal | Not publishable by design; there is no flag |
+| gonogo or `_deadline` refusal | Not publishable by design; refused before staging, and there is no flag |

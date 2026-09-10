@@ -57,8 +57,9 @@ publication run -> Hugging Face URL + the same provenance params
 The keys are one contract shared by three writers: the derived corpus's
 `generator_config["source"]`, the training run's MLflow params, and the
 publication run's params. `derivation_method` is `derived-from-lan` or
-`trained-from-simulation`; `aux_category` is `choice` for a cpn and `omission`
-for an opn. The `derive_total_mass_{mean,min,max}` tags record the per-file
+`trained-from-simulation`, though only the former has a publish path today --
+a simulation-trained auxiliary network has no source LAN for this chain to
+point at; `aux_category` is `choice` for a cpn and `omission` for an opn. The `derive_total_mass_{mean,min,max}` tags record the per-file
 total mass of the integrated density, which is deliberately not renormalised:
 mass past the integration window is the source LAN's, and the number is kept
 so that inheritance can be read rather than hidden.
