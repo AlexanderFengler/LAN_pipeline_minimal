@@ -1030,6 +1030,10 @@ class TestAuxiliaryPublish:
     }
 
     def params(self, network_type="cpn", model="ddm_sdv", **provenance):
+        """A training run's params: the derive-aux keys for an auxiliary
+        type, bare identity for a LAN."""
+        if network_type == "lan":
+            return {"model": model, "network_type": "lan", **provenance}
         category = {"cpn": "choice", "opn": "omission", "gonogo": "nogo"}[network_type]
         return {
             "model": model,
@@ -1056,13 +1060,16 @@ class TestAuxiliaryPublish:
             **kwargs,
         )
 
+    @pytest.mark.parametrize("network_type", ["opn", "cpn", "lan"])
     def test_a_deadline_model_is_refused_before_anything_runs(
-        self, tmp_path, store, stubs
+        self, tmp_path, store, stubs, network_type
     ):
-        # HSSM asks for {base_model}_opn.onnx; a file named after the deadline
-        # variant is unreachable, and its root filename is permanent.
-        run_id = store(self.params("opn", model="ddm_sdv_deadline"), self.TAGS)
-        source = self.artifacts(tmp_path, "opn", "ddm_sdv_deadline")
+        # HSSM asks for {base_model}{suffix}.onnx; a file named after the
+        # deadline variant is unreachable, and its root filename is permanent.
+        # Type-independent: the check must not narrow itself to the opn, the
+        # one type a deadline is naturally associated with.
+        run_id = store(self.params(network_type, model="ddm_sdv_deadline"), self.TAGS)
+        source = self.artifacts(tmp_path, network_type, "ddm_sdv_deadline")
 
         with pytest.raises(PublishError, match="_deadline") as excinfo:
             self.publish(run_id, source, tmp_path)
@@ -1082,6 +1089,7 @@ class TestAuxiliaryPublish:
             self.publish(run_id, source, tmp_path)
 
         assert stubs["validate"] == [] and stubs["upload"] == []
+        assert not (tmp_path / "staged").exists()
 
     def test_a_cpn_with_provenance_publishes_under_its_root_filename(
         self, tmp_path, store, stubs
@@ -1141,18 +1149,30 @@ class TestAuxiliaryPublish:
         assert validate["lan_onnx"] == lan
         assert validate["skip_accuracy"] is True
 
+    @pytest.mark.parametrize("with_provenance", [False, True], ids=["bare", "labelled"])
     def test_a_gonogo_run_is_refused_for_lack_of_a_consumer(
-        self, tmp_path, store, stubs
+        self, tmp_path, store, stubs, with_provenance
     ):
-        run_id = store(self.params("gonogo"), self.TAGS)
+        # Before provenance, staging or validation, and the same refusal
+        # whether or not the run carries derive-aux keys: a gonogo built from
+        # simulation (the common case) must not be told to relabel a network
+        # that can never ship.
+        params = (
+            self.params("gonogo")
+            if with_provenance
+            else {"model": "ddm_sdv", "network_type": "gonogo"}
+        )
+        run_id = store(params, self.TAGS)
         source = self.artifacts(tmp_path, "gonogo")
 
-        result = self.publish(run_id, source, tmp_path)
+        with pytest.raises(PublishError, match="no HSSM consumer") as excinfo:
+            self.publish(run_id, source, tmp_path)
 
-        assert result["published"] is False
-        assert "no HSSM consumer" in result["error"]
+        assert "gonogo" in str(excinfo.value)
+        assert "relabel" not in str(excinfo.value)
+        assert stubs["validate"] == [] and stubs["upload"] == []
+        assert not (tmp_path / "staged").exists()
         assert stubs["upload"] == []
-        assert not (tmp_path / "staged" / "model_card.yaml").exists()
 
     def test_a_dry_run_shows_the_provenance_and_the_generated_card(
         self, tmp_path, store, stubs

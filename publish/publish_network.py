@@ -35,7 +35,7 @@ the training run must carry the provenance of the LAN it was derived from
 the gate report when the operator staged none (``write_aux_model_card``).
 A gonogo network is never published — nothing in HSSM consumes one — and a
 ``_deadline`` model name is refused, since HSSM builds the root filename from
-the base model.
+the base model. Both refusals fire before anything is staged or validated.
 
 One caveat worth knowing: the record is written wherever MLFLOW_TRACKING_URI
 points. If that is a *mirror* pulled down from the cluster, these writes live
@@ -121,8 +121,11 @@ AUX_FORWARDED_TAGS = (
 # What each auxiliary type's output is the probability of, in the provenance
 # vocabulary. A cpn labelled "omission" was derived for something other than
 # what its root filename promises, so the label is checked, not just copied.
-# gonogo is listed so its provenance can be read; it is still never published.
-AUX_CATEGORY_BY_NETWORK_TYPE = {"cpn": "choice", "opn": "omission", "gonogo": "nogo"}
+# gonogo is deliberately absent: it is refused for having no consumer before
+# its provenance is ever read, so a gonogo run without provenance gets the
+# refusal that applies to it, not an instruction to relabel a network that
+# can never ship.
+AUX_CATEGORY_BY_NETWORK_TYPE = {"cpn": "choice", "opn": "omission"}
 
 
 def _normalize_repo(hf_repo: str) -> str:
@@ -780,7 +783,9 @@ def main(
     run_id: str = typer.Option(None, help="MLflow training run id to publish."),
     model: str = typer.Option(None, help="Model name, if not using --run-id."),
     network_type: str = typer.Option(
-        None, help="lan | cpn | opn. A gonogo network is refused: HSSM cannot load it."
+        None,
+        help="lan | cpn | opn. A gonogo network is refused before anything is "
+        "staged: HSSM cannot load it.",
     ),
     artifact_dir: Path = typer.Option(
         None,
@@ -949,6 +954,13 @@ def run_publish(
         raise PublishError(
             f"network_type {network_type!r} is not one of {list(VALID_NETWORK_TYPES)}."
         )
+    # First, before provenance, staging or validation: a gonogo has no
+    # consumer whatever its run carries, so the refusal it gets must be this
+    # one — not "relabel your provenance", which would send the operator to
+    # fix a network that can never ship. gate_verdict refuses it again for a
+    # hand-fed report.
+    if network_type == "gonogo":
+        raise PublishError(GONOGO_REFUSAL)
     # The root filename is always {base_model}{suffix}.onnx: HSSM builds it
     # from the model name it was given plus the type's suffix, and nothing
     # ever asks for ddm_deadline_opn.onnx. A network published under that
