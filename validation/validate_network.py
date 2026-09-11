@@ -220,6 +220,22 @@ def _draw_theta(
     return lower_in + (upper_in - lower_in) * rng.uniform(size=lower.shape)
 
 
+def _param_bounds_dict(model_config: dict) -> dict[str, tuple[float, float]]:
+    """The training box keyed by parameter name: ``{name: (lo, hi)}``.
+
+    ssms keeps ``param_bounds`` as two positional lists (``[lows, highs]``);
+    HSSM's ``model_config["bounds"]`` and ``lanfactory.derive.survey``'s
+    ``param_bounds`` both want it by name. Built from the lists rather than
+    read from ssms' ``param_bounds_dict`` so a hand-written config (tests,
+    a model absent from ssms) needs only the positional form.
+    """
+    lows, highs = model_config["param_bounds"]
+    return {
+        p: (float(lo), float(hi))
+        for p, lo, hi in zip(model_config["params"], lows, highs)
+    }
+
+
 def _inside_shrunk_box(theta: np.ndarray, model_config: dict, shrink: float) -> bool:
     """Whether ``theta`` lies in the training box shrunk by ``shrink`` a side."""
     lower, upper = (np.asarray(b, dtype=float) for b in model_config["param_bounds"])
@@ -258,11 +274,13 @@ def _lan_total_mass(lan_onnx: Path | None, model_config: dict):
 
     None when there is no LAN path to evaluate or ``lanfactory.derive`` is
     not importable (the locked LANfactory predates it). The mass is
-    ``choice_mass`` on LANfactory's onset-refined grid, keyed on the index of
-    the model's ``t`` parameter when it has one, so a failing accuracy draw
-    can be attributed: a cpn/opn derived from a LAN that is mis-normalised
-    at that θ inherits the error, and the number says so. Advisory only —
-    any failure here is logged and yields None, never a failed gate.
+    ``choice_mass`` on LANfactory's onset-refined ``OnsetGrid``, which takes
+    the onset per θ as ``onset=theta[:, t_idx]`` when the model has a ``t``
+    parameter, and on the plain ``IntegrationGrid`` otherwise, so a failing
+    accuracy draw can be attributed: a cpn/opn derived from a LAN that is
+    mis-normalised at that θ inherits the error, and the number says so.
+    Advisory only — any failure here is logged and yields None, never a
+    failed gate.
     """
     if lan_onnx is None:
         return None
@@ -278,19 +296,19 @@ def _lan_total_mass(lan_onnx: Path | None, model_config: dict):
     try:
         predictor = load_onnx_predictor(lan_onnx)
         params = list(model_config["params"])
-        grid = (
-            OnsetGrid(onset_index=params.index("t"))
-            if "t" in params
-            else IntegrationGrid()
-        )
+        t_idx = params.index("t") if "t" in params else None
+        grid = OnsetGrid() if t_idx is not None else IntegrationGrid()
         choices = list(model_config["choices"])
     except Exception as e:  # noqa: BLE001 - attribution must not break the gate
         logger.warning(f"LAN total_mass unavailable for the accuracy draws: {e}")
         return None
 
     def total(theta: np.ndarray) -> float | None:
+        row = np.atleast_2d(np.asarray(theta, dtype=float))
+        onset = row[:, t_idx] if t_idx is not None else None
         try:
-            return float(choice_mass(predictor, theta, choices, grid=grid).total[0])
+            mass = choice_mass(predictor, row, choices, grid=grid, onset=onset)
+            return float(mass.total[0])
         except Exception as e:  # noqa: BLE001
             logger.warning(f"LAN total_mass failed at theta={theta.tolist()}: {e}")
             return None
@@ -308,14 +326,10 @@ def _hssm_model_kwargs(model_name: str, model_config: dict) -> dict:
 
     if model_name in list_models():
         return {}
-    lows, highs = model_config["param_bounds"]
     return {
         "model_config": {
             "list_params": list(model_config["params"]),
-            "bounds": {
-                p: (float(lo), float(hi))
-                for p, lo, hi in zip(model_config["params"], lows, highs)
-            },
+            "bounds": _param_bounds_dict(model_config),
             "backend": "jax",
         }
     }
@@ -733,9 +747,10 @@ def gate_mass_survey(
 
     try:
         params = list(model_config["params"])
+        # survey() wants the box by name, not ssms' positional [lows, highs].
         result = survey(
             load_onnx_predictor(onnx_path),
-            model_config["param_bounds"],
+            _param_bounds_dict(model_config),
             params,
             list(model_config["choices"]),
             n_theta=n_theta,

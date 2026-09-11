@@ -902,8 +902,7 @@ def fake_derive(monkeypatch):
             self.path = str(path)
 
     class OnsetGrid:
-        def __init__(self, onset_index=None):
-            self.onset_index = onset_index
+        """L1's OnsetGrid is a frozen dataclass of grid sizes: no onset index."""
 
     class IntegrationGrid:
         pass
@@ -917,13 +916,25 @@ def fake_derive(monkeypatch):
         return Predictor(path)
 
     def survey(predictor, param_bounds, params, choices, **kwargs):
+        # L1: param_bounds is {name: (lo, hi)} and must cover every param;
+        # ssms' positional [lows, highs] raises "param_bounds lacks bounds".
+        assert isinstance(param_bounds, dict), type(param_bounds)
+        assert set(param_bounds) == set(params), (param_bounds, params)
+        assert all(len(b) == 2 and b[0] <= b[1] for b in param_bounds.values())
         state.calls.append(("survey", predictor, param_bounds, params, choices, kwargs))
         if state.survey_error is not None:
             raise state.survey_error
         return state.survey_result
 
-    def choice_mass(predictor, theta, choices, grid=None, **kwargs):
-        state.calls.append(("mass", np.asarray(theta).tolist(), choices, grid))
+    def choice_mass(predictor, theta, choices, *, grid, onset=None):
+        # L1: an OnsetGrid needs onset=theta[:, t_idx]; an IntegrationGrid
+        # takes none. Either mismatch is a ValueError there.
+        theta = np.asarray(theta)
+        assert theta.ndim == 2, theta.shape
+        if isinstance(grid, OnsetGrid) != (onset is not None):
+            raise ValueError("an OnsetGrid needs onset=theta[:, t_idx]")
+        onset = None if onset is None else np.asarray(onset).tolist()
+        state.calls.append(("mass", theta[0].tolist(), choices, grid, onset))
         return Mass(state.total_mass)
 
     derive = types.ModuleType("lanfactory.derive")
@@ -944,6 +955,8 @@ DDM_CONFIG = {
     "param_bounds": [[-3.0, 0.3, 0.1, 0.0], [3.0, 2.5, 0.9, 2.0]],
     "choices": [-1, 1],
 }
+# What L1's survey() wants: ssms' param_bounds_dict, keyed by name.
+DDM_BOUNDS = {"v": (-3.0, 3.0), "a": (0.3, 2.5), "z": (0.1, 0.9), "t": (0.0, 2.0)}
 
 
 class TestMassSurveyGate:
@@ -970,7 +983,8 @@ class TestMassSurveyGate:
         assert fake_derive.calls[0] == ("load", str(path))
         _, predictor, bounds, params, choices, kwargs = fake_derive.calls[1]
         assert predictor.path == str(path)
-        assert bounds == DDM_CONFIG["param_bounds"]
+        # By name, as survey() requires — NOT ssms' positional [lows, highs].
+        assert bounds == DDM_BOUNDS
         assert params == ["v", "a", "z", "t"]
         assert choices == [-1, 1]
         assert kwargs == {"n_theta": 500, "seed": 7, "onset_param": "t"}
@@ -1091,7 +1105,7 @@ class TestMassSurveyWiring:
         assert params == ["v", "a", "z", "t"]
         assert kwargs["onset_param"] == "t"
         assert kwargs["n_theta"] == 20_000
-        assert len(bounds[0]) == 4 and list(choices) == [-1, 1]
+        assert bounds == DDM_BOUNDS and list(choices) == [-1, 1]
 
     def test_a_failing_survey_fails_the_report(self, tmp_path, fake_derive):
         fake_derive.survey_result = canned_survey(p99=0.2, frac_gt_0_10=0.1)
@@ -1232,9 +1246,27 @@ class TestAccuracyStrata:
         assert fake_derive.calls[0] == ("load", str(lan))
         masses = [c for c in fake_derive.calls if c[0] == "mass"]
         assert [m[1] for m in masses] == [d["theta"] for d in result["draws"]]
-        # ddm's t is its fourth parameter: the grid is refined at that onset.
-        assert all(m[3].onset_index == 3 for m in masses)
+        # ddm's t is its fourth parameter: the grid is L1's OnsetGrid and the
+        # onset handed to choice_mass is that draw's t, as onset=theta[:, 3].
+        derive = sys.modules["lanfactory.derive"]
+        assert all(isinstance(m[3], derive.OnsetGrid) for m in masses)
+        assert [m[4] for m in masses] == [[d["theta"][3]] for d in result["draws"]]
         assert all(list(m[2]) == [-1, 1] for m in masses)
+
+    def test_a_model_without_t_integrates_on_the_plain_grid(
+        self, tmp_path, fake_derive
+    ):
+        config = {
+            "params": ["v", "a", "z"],
+            "param_bounds": [[-3.0, 0.3, 0.1], [3.0, 2.5, 0.9]],
+            "choices": [-1, 1],
+        }
+        total = vn._lan_total_mass(make_onnx(tmp_path / "lan.onnx", (1, 5)), config)
+        assert total(np.array([0.5, 1.0, 0.5])) == 0.97
+        derive = sys.modules["lanfactory.derive"]
+        (_, theta, _, grid, onset) = [c for c in fake_derive.calls if c[0] == "mass"][0]
+        assert isinstance(grid, derive.IntegrationGrid) and onset is None
+        assert theta == [0.5, 1.0, 0.5]
 
     def test_total_mass_needs_a_lan_to_evaluate(
         self, tmp_path, monkeypatch, fake_derive
