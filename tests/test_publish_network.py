@@ -303,6 +303,24 @@ class TestAuxProvenance:
             "data_origin": "derived",
         }
 
+    def test_the_tail_policy_record_travels_when_present_and_only_then(self):
+        # LANfactory L2/L3 log the corpus manifest's fallback fraction, the
+        # simulated mass past max_t and the onset leak beside the mass stats;
+        # an older training run has none of them and none is invented.
+        record = {
+            "derive_fallback_frac": "0.012",
+            "derive_sim_past_max_t_max": "0.004",
+            "derive_leak_below_onset_p99": "0.0007",
+        }
+        forwarded = forwarded_tags({**record, "run_uuid": "f" * 32})
+        assert forwarded == record
+
+        older = forwarded_tags(
+            {"derive_total_mass_mean": "0.998", "run_uuid": "f" * 32}
+        )
+        assert older == {"derive_total_mass_mean": "0.998"}
+        assert not set(record) & set(older)
+
 
 class TestAuxModelCard:
     """The card generated when the operator staged none."""
@@ -346,7 +364,7 @@ class TestAuxModelCard:
         # The gate numbers and the noise they are judged against.
         assert "0.0012" in description and "0.0031" in description
         assert "0.0016" in description
-        assert "not renormalised" in description
+        assert "renormalised by the source LAN's own total" in description
         assert 'model="ddm_sdv"' in card["usage_example"]
         assert "missing_data=True" in card["usage_example"]
         assert "-999.0" in card["usage_example"]
@@ -402,7 +420,7 @@ class TestAuxModelCard:
         # card claiming they are "recorded on the training and publish runs"
         # would be false for a run without them.
         without = self.load(tmp_path, "cpn")["description"]
-        assert "not renormalised" in without
+        assert "renormalised by the source LAN's own total" in without
         assert "carries no derive_total_mass" in without
 
         tags = {
@@ -411,13 +429,48 @@ class TestAuxModelCard:
             "derive_total_mass_max": "1.0",
         }
         with_tags = self.load(tmp_path, "cpn", tags)["description"]
-        assert "not renormalised" in with_tags
+        assert "renormalised by the source LAN's own total" in with_tags
         assert "0.998 / 0.99 / 1" in with_tags
         assert "carries no derive_total_mass" not in with_tags
 
         # One tag alone is not a record; the statement stays honest.
         partial = self.load(tmp_path, "cpn", {"derive_total_mass_mean": "0.998"})
         assert "carries no derive_total_mass" in partial["description"]
+
+    def test_the_tail_policy_reports_the_fallback_and_the_leak_when_recorded(
+        self, tmp_path
+    ):
+        # The renormalisation is only trusted where the LAN's total sat in
+        # (0.98, 1.03); the card says how much of the box fell back to
+        # simulation and how much mass leaked below the onset, or that the
+        # training run never recorded either.
+        without = self.load(tmp_path, "cpn")["description"]
+        assert "carries no derive_fallback_frac" in without
+        assert "carries no derive_leak_below_onset_p99" in without
+        assert "labelled by simulation because" not in without
+        assert "derive_sim_past_max_t_max" not in without
+
+        tags = {
+            "derive_fallback_frac": "0.012",
+            "derive_sim_past_max_t_max": "0.004",
+            "derive_leak_below_onset_p99": "0.0007",
+        }
+        with_tags = self.load(tmp_path, "cpn", tags)["description"]
+        assert (
+            "1.2 % of the parameter box was labelled by simulation because the "
+            "LAN's total was outside (0.98, 1.03)" in with_tags
+        )
+        assert "leaking below the onset is 0.0007" in with_tags
+        assert "past max_t was 0.004 (derive_sim_past_max_t_max)" in with_tags
+        assert "carries no derive_fallback_frac" not in with_tags
+        assert "carries no derive_leak_below_onset_p99" not in with_tags
+
+        # Each figure stands on its own: a run that recorded only the fallback
+        # states the leak's absence, not a made-up value.
+        only_fallback = self.load(tmp_path, "opn", {"derive_fallback_frac": "0"})
+        description = only_fallback["description"]
+        assert "0 % of the parameter box was labelled by simulation" in description
+        assert "carries no derive_leak_below_onset_p99" in description
 
     def test_a_card_without_gate_numbers_still_renders(self, tmp_path):
         # Defensive only: the card is written after the verdict, so a report
@@ -1126,6 +1179,9 @@ class TestAuxiliaryPublish:
         "derive_total_mass_mean": "0.998",
         "derive_total_mass_min": "0.990",
         "derive_total_mass_max": "1.000",
+        "derive_fallback_frac": "0.012",
+        "derive_sim_past_max_t_max": "0.004",
+        "derive_leak_below_onset_p99": "0.0007",
         "data_origin": "derived",
     }
 
@@ -1243,7 +1299,11 @@ class TestAuxiliaryPublish:
         assert publish.data.metrics["gate_hssm_missing_initial_logp_p0"] == -123.4
         assert publish.data.metrics["gate_hssm_missing_initial_logp_p05"] == -120.1
         assert publish.data.tags["derive_total_mass_mean"] == "0.998"
+        assert publish.data.tags["derive_fallback_frac"] == "0.012"
+        assert publish.data.tags["derive_sim_past_max_t_max"] == "0.004"
+        assert publish.data.tags["derive_leak_below_onset_p99"] == "0.0007"
         assert publish.data.tags["data_origin"] == "derived"
+        assert "run_uuid" not in publish.data.tags
         assert client.get_run(run_id).data.tags["published"] == "true"
 
     def test_an_opn_is_validated_with_its_provenance_category_and_its_lan(
@@ -1370,11 +1430,50 @@ class TestAuxiliaryPublish:
         assert plan["root_filename"] == "ddm_sdv_cpn.onnx"
         assert "model_card.yaml" in plan["staged"]
         assert "validation_report.json" in plan["staged"]
+        # The tags the publish run would carry, so a training run missing
+        # its tail-policy record is visible before anything is uploaded.
+        assert plan["forwarded_tags"] == {
+            key: value for key, value in self.TAGS.items() if key != "run_uuid"
+        }
         card = yaml.safe_load((staged / "model_card.yaml").read_text(encoding="utf-8"))
         assert card["title"] == "ddm_sdv (CPN)"
-        # The training run's mass tags reached the card, not just the record.
+        # The training run's tail-policy tags reached the card, not just the
+        # record.
         assert "0.998 / 0.99 / 1" in card["description"]
+        assert (
+            "1.2 % of the parameter box was labelled by simulation"
+            in (card["description"])
+        )
+        assert "leaking below the onset is 0.0007" in card["description"]
         assert stubs["upload"] == []
+
+    def test_a_dry_run_plan_omits_tags_the_training_run_lacks(
+        self, tmp_path, store, stubs
+    ):
+        # An older run logged only the mass stats: the plan shows exactly
+        # those, and the card says the rest is unrecorded rather than
+        # inventing it.
+        import yaml
+
+        older = {
+            key: value
+            for key, value in self.TAGS.items()
+            if not key.startswith(("derive_fallback", "derive_sim", "derive_leak"))
+        }
+        run_id = store(self.params("cpn"), older)
+        source = self.artifacts(tmp_path, "cpn")
+
+        plan = self.publish(run_id, source, tmp_path, dry_run=True)
+
+        assert plan["forwarded_tags"] == {
+            key: value for key, value in older.items() if key != "run_uuid"
+        }
+        assert "derive_fallback_frac" not in plan["forwarded_tags"]
+        card = yaml.safe_load(
+            (tmp_path / "staged" / "model_card.yaml").read_text(encoding="utf-8")
+        )
+        assert "carries no derive_fallback_frac" in card["description"]
+        assert "carries no derive_leak_below_onset_p99" in card["description"]
 
     def test_an_operator_card_is_never_overwritten(self, tmp_path, store, stubs):
         run_id = store(self.params("cpn"), self.TAGS)
@@ -1403,6 +1502,7 @@ class TestAuxiliaryPublish:
         result = self.publish(run_id, source, tmp_path, dry_run=True)
 
         assert result["provenance"] == {}
+        assert result["forwarded_tags"] == {}
         assert result["root_filename"] == "ddm_sdv.onnx"
         assert not (tmp_path / "staged" / "model_card.yaml").exists()
 
