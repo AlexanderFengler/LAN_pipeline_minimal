@@ -209,7 +209,7 @@ class TestWiring:
         with pytest.raises(ValueError, match="Unknown network_type"):
             validate_network(path, model_name="ddm", network_type="LAN")
 
-    def test_report_shape_is_stable(self, tmp_path):
+    def test_report_shape_is_stable(self, tmp_path, no_derive):
         path = make_onnx(tmp_path / "good.onnx", (1, 6))
         report = validate_network(
             path, model_name="ddm", skip_hssm=True, skip_density=True
@@ -227,8 +227,9 @@ class TestWiring:
         ]
         # The one top-level key the auxiliary gates added; null for a LAN.
         assert report["aux_category"] is None
-        # Under the locked LANfactory there is no lanfactory.derive, so the
-        # survey skips itself with the reason that says what has to move.
+        # Without lanfactory.derive (forced here, so the shape is pinned the
+        # same way after the lock moves) the survey skips itself with the
+        # reason that says what has to move.
         survey = report["gates"][-1]
         assert survey["skipped"] and survey["passed"]
         assert survey["reason"] == (
@@ -953,6 +954,25 @@ def fake_derive(monkeypatch):
     return state
 
 
+@pytest.fixture
+def no_derive(monkeypatch):
+    """Force ``from lanfactory.derive import ...`` to raise ImportError.
+
+    A None entry in sys.modules makes the import fail deterministically, so
+    the skip path is pinned regardless of which LANfactory the lock holds —
+    the same way the cpn A3 tests force HSSM's version rather than read it.
+    """
+    monkeypatch.setitem(sys.modules, "lanfactory.derive", None)
+
+
+def lanfactory_derive_installed() -> bool:
+    try:
+        import lanfactory.derive  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
 DDM_CONFIG = {
     "params": ["v", "a", "z", "t"],
     "param_bounds": [[-3.0, 0.3, 0.1, 0.0], [3.0, 2.5, 0.9, 2.0]],
@@ -965,10 +985,11 @@ DDM_BOUNDS = {"v": (-3.0, 3.0), "a": (0.3, 2.5), "z": (0.1, 0.9), "t": (0.0, 2.0
 class TestMassSurveyGate:
     """gate_mass_survey against the stubbed lanfactory.derive."""
 
-    def test_skips_with_the_lock_reason_when_derive_is_absent(self, tmp_path):
-        # No stub here: the environment's LANfactory is the locked git main,
-        # which has no derive package. The skip must name what has to move.
-        assert "lanfactory.derive" not in sys.modules
+    def test_skips_with_the_lock_reason_when_derive_is_absent(
+        self, tmp_path, no_derive
+    ):
+        # The import failure is forced, not read from the environment: this
+        # pins the skip path after the lock moves too.
         gate = vn.gate_mass_survey(make_onnx(tmp_path / "lan.onnx", (1, 6)), DDM_CONFIG)
         assert gate["skipped"] and gate["passed"]
         assert gate["reason"] == vn.LANFACTORY_DERIVE_SKIP_REASON
@@ -976,6 +997,18 @@ class TestMassSurveyGate:
             "lanfactory.derive not available; refresh the lock after LANfactory L1 merges"
         )
         assert "survey" not in gate
+
+    @pytest.mark.skipif(
+        lanfactory_derive_installed(),
+        reason="the lock now holds a LANfactory with derive: the canary has fired",
+    )
+    def test_canary_the_locked_lanfactory_still_lacks_derive(self, tmp_path):
+        # The ONE environment-dependent test, by design: when the lock moves
+        # this skips, which is the signal to freeze the thresholds (see the
+        # PROVISIONAL comment) and to consider making the gate required.
+        gate = vn.gate_mass_survey(make_onnx(tmp_path / "lan.onnx", (1, 6)), DDM_CONFIG)
+        assert gate["skipped"]
+        assert gate["reason"] == vn.LANFACTORY_DERIVE_SKIP_REASON
 
     def test_hands_the_model_space_and_onset_param_to_the_survey(
         self, tmp_path, fake_derive
@@ -1054,14 +1087,24 @@ class TestMassSurveyGate:
         # The survey is still recorded on a failure: that is what says where.
         assert gate["survey"]["total"]["p99_abs_dev"] == p99
 
-    def test_exactly_at_a_line_is_not_past_it(self, tmp_path, fake_derive):
+    def test_exactly_at_a_fail_line_is_not_past_it(self, tmp_path, fake_derive):
         fake_derive.survey_result = canned_survey(
             p99=0.10, frac_gt_0_05=0.01, frac_gt_0_10=0.02
         )
         gate = vn.gate_mass_survey(make_onnx(tmp_path / "lan.onnx", (1, 6)), DDM_CONFIG)
         assert gate["passed"]
-        # Past the warn lines (0.05 / 0.01) but not past the fail lines.
+        # Past the warn line on p99 (0.05) but not past the fail lines.
         assert gate["verdict"] == "warn"
+        assert "error" not in gate
+
+    def test_exactly_at_a_warn_line_is_not_past_it(self, tmp_path, fake_derive):
+        # Both warn comparisons are strict: p99 == 0.05 and frac_gt_0.05 ==
+        # 0.01 together are a clean pass with no warning at all.
+        fake_derive.survey_result = canned_survey(p99=0.05, frac_gt_0_05=0.01)
+        gate = vn.gate_mass_survey(make_onnx(tmp_path / "lan.onnx", (1, 6)), DDM_CONFIG)
+        assert gate["passed"]
+        assert gate["verdict"] == "pass"
+        assert "warning" not in gate and "error" not in gate
 
     def test_thresholds_are_parameters_not_constants(self, tmp_path, fake_derive):
         fake_derive.survey_result = canned_survey(p99=0.12, frac_gt_0_10=0.03)
@@ -1233,8 +1276,9 @@ class TestAccuracyStrata:
             inside = vn._inside_shrunk_box(theta, config, 0.1)
             assert inside == (d["stratum"] == "core"), d
 
-    def test_total_mass_is_none_without_lanfactory_derive(self, tmp_path, monkeypatch):
-        assert "lanfactory.derive" not in sys.modules
+    def test_total_mass_is_none_without_lanfactory_derive(
+        self, tmp_path, monkeypatch, no_derive
+    ):
         path = make_constant_onnx(tmp_path / "half.onnx", 5, np.log(0.5))
         monkeypatch.setattr(vn, "aux_truth", TestAccuracyGate.constant_truth(0.5))
         lan = make_onnx(tmp_path / "ddm.onnx", (1, 6))
