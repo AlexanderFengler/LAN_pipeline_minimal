@@ -122,12 +122,20 @@ PUBLISHABLE_DERIVATION_METHODS = ("derived-from-lan",)
 # stringifies it), plus the spellings a hand-relabelled run might use.
 _ABSENT_PARAM_VALUES = frozenset({"", "None", "null"})
 # Tags on the training run that travel to the publish run when present: the
-# per-file total mass of the derived corpus (the tail-policy record — masses
-# are not renormalised) and where the corpus came from.
+# tail-policy record of the derived corpus — the per-file total mass the
+# source LAN put on the integration grid before its labels were renormalised
+# by that total, the share of the parameter box that fell back to simulation
+# because the total was outside (0.98, 1.03), the most simulated mass any file
+# placed past max_t, the p99 of the mass leaking below the onset — and where
+# the corpus came from. LANfactory logs these on the training run from the
+# corpus manifest; they are forwarded when present and never invented.
 AUX_FORWARDED_TAGS = (
     "derive_total_mass_mean",
     "derive_total_mass_min",
     "derive_total_mass_max",
+    "derive_fallback_frac",
+    "derive_sim_past_max_t_max",
+    "derive_leak_below_onset_p99",
     "data_origin",
 )
 # What each auxiliary type's output is the probability of, in the provenance
@@ -561,7 +569,8 @@ def write_aux_model_card(
     description, usage_example); architecture and training are left out so
     the renderer fills them from the pickled configs, which are the
     authoritative record. ``training_tags`` are the tags forwarded from the
-    training run (``forwarded_tags``): the ``derive_total_mass_*`` values are
+    training run (``forwarded_tags``): the ``derive_total_mass_*`` values, the
+    ``derive_fallback_frac`` and the ``derive_leak_below_onset_p99`` are
     quoted in the tail-policy paragraph when present, and their absence is
     stated rather than papered over. The result is round-tripped through
     LANfactory's loader before it is accepted, so a card that would crash the
@@ -630,22 +639,56 @@ def write_aux_model_card(
     # The tail-policy record, only claimed when the training run carries it:
     # forwarded_tags forwards these tags when present, so a card saying they
     # are "recorded on the training and publish runs" would be false for a
-    # run that has none.
+    # run that has none. Each figure is stated or its absence is, never
+    # silently dropped: the total-mass stats say how far the source LAN was
+    # from normalised before its labels were renormalised, the fallback
+    # fraction says how much of the box that renormalisation was not trusted
+    # for, and the leak says how much mass sat below the onset.
+    tags = training_tags or {}
     masses = {
-        stat: (training_tags or {}).get(f"derive_total_mass_{stat}")
-        for stat in ("mean", "min", "max")
+        stat: tags.get(f"derive_total_mass_{stat}") for stat in ("mean", "min", "max")
     }
     if all(masses.values()):
-        tail_record = (
-            "the derived corpus's per-file total mass is recorded on the training "
-            "and publish runs as derive_total_mass_{mean,min,max} = "
+        tail_record = [
+            "the derived corpus's per-file total mass before renormalisation is "
+            "recorded on the training and publish runs as "
+            "derive_total_mass_{mean,min,max} = "
             f"{_card_number(masses['mean'])} / {_card_number(masses['min'])} / "
             f"{_card_number(masses['max'])}."
-        )
+        ]
     else:
-        tail_record = (
+        tail_record = [
             "the training run carries no derive_total_mass_{mean,min,max} tags, "
             "so the derived corpus's per-file total mass is not recorded here."
+        ]
+    fallback = tags.get("derive_fallback_frac")
+    if fallback is not None:
+        tail_record.append(
+            f"{_card_number(float(fallback) * 100, 3)} % of the parameter box was "
+            "labelled by simulation because the LAN's total was outside "
+            "(0.98, 1.03) (derive_fallback_frac)."
+        )
+    else:
+        tail_record.append(
+            "The training run carries no derive_fallback_frac tag, so the share "
+            "of the parameter box labelled by simulation is not recorded here."
+        )
+    sim_past = tags.get("derive_sim_past_max_t_max")
+    if sim_past is not None:
+        tail_record.append(
+            "The most simulated mass any file placed past max_t was "
+            f"{_card_number(sim_past)} (derive_sim_past_max_t_max)."
+        )
+    leak = tags.get("derive_leak_below_onset_p99")
+    if leak is not None:
+        tail_record.append(
+            f"The p99 of the mass leaking below the onset is {_card_number(leak)} "
+            "(derive_leak_below_onset_p99)."
+        )
+    else:
+        tail_record.append(
+            "The training run carries no derive_leak_below_onset_p99 tag, so the "
+            "mass leaking below the onset is not recorded here."
         )
 
     description = "\n\n".join(
@@ -666,8 +709,9 @@ def write_aux_model_card(
             f"{accuracy.get('n_param_draws', 'n/a')} parameter draws, against a "
             f"Monte-Carlo truth with standard error ≤ {_card_number(truth_se)} "
             f"(n_sim = {accuracy.get('n_sim', 'n/a')} per draw).",
-            "Tail policy: the source LAN's mass past max_t is not renormalised "
-            f"away; {tail_record}",
+            "Tail policy: labels were renormalised by the source LAN's own total "
+            "on the integration grid, so the LAN's mass past max_t is folded "
+            "back in by that total rather than dropped; " + " ".join(tail_record),
         ]
     )
     card = {
@@ -754,8 +798,9 @@ def publish_network(
     """Record the publish in MLflow and stamp the training run. Returns run id.
 
     ``provenance`` (an auxiliary network's derive-aux keys) is logged as params
-    beside the source run identity; ``training_tags`` (the derive_total_mass_*
-    and data_origin tags forwarded from the training run) as tags.
+    beside the source run identity; ``training_tags`` (the derive_* tail-policy
+    record and data_origin tags forwarded from the training run,
+    ``AUX_FORWARDED_TAGS``) as tags.
     """
     import mlflow
 
@@ -1120,6 +1165,10 @@ def run_publish(
             "staged": sorted(p.name for p in staging.iterdir()),
             "gate": reason,
             "provenance": provenance,
+            # What the publish run will carry as tags, shown on the plan so a
+            # dry run reveals a training run that lacks the tail-policy
+            # record before anything is uploaded.
+            "forwarded_tags": training_tags,
         }
         if not ok:
             logger.error(f"Not publishing: {reason}")
