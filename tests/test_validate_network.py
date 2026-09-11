@@ -7,6 +7,7 @@ inference stack, which does not belong in the default suite.
 """
 
 import importlib.metadata
+import json
 import sys
 import types
 
@@ -197,8 +198,9 @@ class TestWiring:
         assert not report["passed"]
         gates = {g["gate"]: g for g in report["gates"]}
         assert not gates["structure"]["passed"]
-        for later in ("parity", "hssm_load", "density"):
+        for later in ("parity", "hssm_load", "density", "mass_survey"):
             assert gates[later].get("skipped"), later
+            assert gates[later]["reason"] == "structure gate failed"
 
     def test_an_unknown_network_type_is_rejected_not_defaulted(self, tmp_path):
         # Defaulting to 0 extra inputs would surface as "input width 6 !=
@@ -213,14 +215,26 @@ class TestWiring:
             path, model_name="ddm", skip_hssm=True, skip_density=True
         )
         assert report["schema_version"] == 1
+        # mass_survey was APPENDED deliberately: the publisher's REQUIRED_GATES
+        # still name only structure/hssm_load/density, so a skip there never
+        # blocks a publish, and every earlier name keeps its position.
         assert [g["gate"] for g in report["gates"]] == [
             "structure",
             "parity",
             "hssm_load",
             "density",
+            "mass_survey",
         ]
         # The one top-level key the auxiliary gates added; null for a LAN.
         assert report["aux_category"] is None
+        # Under the locked LANfactory there is no lanfactory.derive, so the
+        # survey skips itself with the reason that says what has to move.
+        survey = report["gates"][-1]
+        assert survey["skipped"] and survey["passed"]
+        assert survey["reason"] == (
+            "lanfactory.derive not available; refresh the lock after LANfactory L1 merges"
+        )
+        assert report["passed"]
 
 
 AUX_SKIPS = dict(skip_hssm=True, skip_accuracy=True)
@@ -829,6 +843,429 @@ class TestAuxTruth:
     def test_gonogo_has_no_truth(self):
         with pytest.raises(ValueError, match="gonogo"):
             vn.aux_truth("ddm", "gonogo", np.zeros(4), deadline=1.0)
+
+
+def canned_survey(p99=0.02, frac_gt_0_05=0.0, frac_gt_0_10=0.0, seconds=41.5):
+    """A survey dict in the shape LANfactory L1's ``survey`` returns."""
+    total = {
+        "mean": 1.001,
+        "p50_abs_dev": 0.0037,
+        "p90_abs_dev": 0.015,
+        "p99_abs_dev": p99,
+        "min": 0.95,
+        "max": 1.05,
+        "frac_gt_0.02": 0.1,
+        "frac_gt_0.05": frac_gt_0_05,
+        "frac_gt_0.10": frac_gt_0_10,
+    }
+    return {
+        "n_theta": 20_000,
+        "grid": {"kind": "onset", "n_points": 1000},
+        "seconds": seconds,
+        "total": total,
+        "shrunk_box": {**total, "frac_of_theta": 0.41},
+        "leak_below_onset": {"mean": 1e-4, "p99": 1e-3, "max": 2e-3},
+        "by_param": {
+            "a": [
+                {"lo": 0.3, "hi": 0.52, "mean_dev": 0.001, "max_abs_dev": 0.02, "n": 2}
+            ]
+        },
+        "worst_cell": {"a": [2.2, 2.5], "v": [-0.5, 0.5], "mean_dev": 0.2},
+    }
+
+
+class FakeDerive:
+    """State behind the ``lanfactory.derive`` stub: what it returns, what it saw."""
+
+    def __init__(self):
+        self.survey_result = canned_survey()
+        self.survey_error = None
+        self.total_mass = 0.97
+        self.calls = []
+
+
+@pytest.fixture
+def fake_derive(monkeypatch):
+    """A stub ``lanfactory.derive`` in sys.modules.
+
+    The locked LANfactory has no derive package, so this is the only way to
+    drive the mass-survey gate's verdicts and the accuracy gate's total_mass
+    attribution. ``survey`` returns whatever ``survey_result`` holds and
+    records its arguments; ``choice_mass`` returns ``total_mass`` for every θ.
+    """
+    state = FakeDerive()
+
+    class Predictor:
+        input_width = 6
+
+        def __init__(self, path):
+            self.path = str(path)
+
+    class OnsetGrid:
+        def __init__(self, onset_index=None):
+            self.onset_index = onset_index
+
+    class IntegrationGrid:
+        pass
+
+    class Mass:
+        def __init__(self, total):
+            self.total = np.asarray([total])
+
+    def load_onnx_predictor(path):
+        state.calls.append(("load", str(path)))
+        return Predictor(path)
+
+    def survey(predictor, param_bounds, params, choices, **kwargs):
+        state.calls.append(("survey", predictor, param_bounds, params, choices, kwargs))
+        if state.survey_error is not None:
+            raise state.survey_error
+        return state.survey_result
+
+    def choice_mass(predictor, theta, choices, grid=None, **kwargs):
+        state.calls.append(("mass", np.asarray(theta).tolist(), choices, grid))
+        return Mass(state.total_mass)
+
+    derive = types.ModuleType("lanfactory.derive")
+    derive.load_onnx_predictor = load_onnx_predictor
+    derive.survey = survey
+    derive.choice_mass = choice_mass
+    derive.OnsetGrid = OnsetGrid
+    derive.IntegrationGrid = IntegrationGrid
+    lanfactory = types.ModuleType("lanfactory")
+    lanfactory.derive = derive
+    monkeypatch.setitem(sys.modules, "lanfactory", lanfactory)
+    monkeypatch.setitem(sys.modules, "lanfactory.derive", derive)
+    return state
+
+
+DDM_CONFIG = {
+    "params": ["v", "a", "z", "t"],
+    "param_bounds": [[-3.0, 0.3, 0.1, 0.0], [3.0, 2.5, 0.9, 2.0]],
+    "choices": [-1, 1],
+}
+
+
+class TestMassSurveyGate:
+    """gate_mass_survey against the stubbed lanfactory.derive."""
+
+    def test_skips_with_the_lock_reason_when_derive_is_absent(self, tmp_path):
+        # No stub here: the environment's LANfactory is the locked git main,
+        # which has no derive package. The skip must name what has to move.
+        assert "lanfactory.derive" not in sys.modules
+        gate = vn.gate_mass_survey(make_onnx(tmp_path / "lan.onnx", (1, 6)), DDM_CONFIG)
+        assert gate["skipped"] and gate["passed"]
+        assert gate["reason"] == vn.LANFACTORY_DERIVE_SKIP_REASON
+        assert gate["reason"] == (
+            "lanfactory.derive not available; refresh the lock after LANfactory L1 merges"
+        )
+        assert "survey" not in gate
+
+    def test_hands_the_model_space_and_onset_param_to_the_survey(
+        self, tmp_path, fake_derive
+    ):
+        path = make_onnx(tmp_path / "lan.onnx", (1, 6))
+        gate = vn.gate_mass_survey(path, DDM_CONFIG, n_theta=500, seed=7)
+        assert gate["passed"] and not gate.get("skipped")
+        assert fake_derive.calls[0] == ("load", str(path))
+        _, predictor, bounds, params, choices, kwargs = fake_derive.calls[1]
+        assert predictor.path == str(path)
+        assert bounds == DDM_CONFIG["param_bounds"]
+        assert params == ["v", "a", "z", "t"]
+        assert choices == [-1, 1]
+        assert kwargs == {"n_theta": 500, "seed": 7, "onset_param": "t"}
+
+    def test_a_model_without_t_gets_no_onset_param(self, tmp_path, fake_derive):
+        config = {
+            "params": ["v", "a", "z"],
+            "param_bounds": [[-3.0, 0.3, 0.1], [3.0, 2.5, 0.9]],
+            "choices": [-1, 1],
+        }
+        vn.gate_mass_survey(make_onnx(tmp_path / "lan.onnx", (1, 5)), config)
+        assert fake_derive.calls[1][-1]["onset_param"] is None
+
+    def test_records_the_whole_survey_and_its_seconds(self, tmp_path, fake_derive):
+        gate = vn.gate_mass_survey(make_onnx(tmp_path / "lan.onnx", (1, 6)), DDM_CONFIG)
+        assert gate["survey"] == canned_survey()
+        assert gate["seconds"] == 41.5
+        assert gate["n_theta"] == 20_000
+        assert gate["verdict"] == "pass"
+        assert gate["p99_abs_dev"] == 0.02
+        assert gate["frac_gt_0.10"] == 0.0 and gate["frac_gt_0.05"] == 0.0
+        assert gate["p99_max"] == vn.DEFAULT_MASS_SURVEY_P99_MAX == 0.10
+        assert gate["frac_gt_0_10_max"] == vn.DEFAULT_MASS_SURVEY_FRAC_GT_0_10_MAX
+        assert gate["frac_gt_0_10_max"] == 0.02
+        assert "warning" not in gate and "error" not in gate
+
+    @pytest.mark.parametrize(
+        "p99, frac_05, expected_in_warning",
+        [
+            # The Hub ddm LAN itself: p99 0.080, 1.9 % beyond 0.05 — a WARN.
+            (0.080, 0.019, "total.p99_abs_dev 0.0800 > 0.05"),
+            (0.051, 0.0, "total.p99_abs_dev 0.0510 > 0.05"),
+            (0.02, 0.011, "total.frac_gt_0.05 0.0110 > 0.01"),
+        ],
+    )
+    def test_warns_but_passes_past_the_warn_lines(
+        self, tmp_path, fake_derive, p99, frac_05, expected_in_warning
+    ):
+        fake_derive.survey_result = canned_survey(p99=p99, frac_gt_0_05=frac_05)
+        gate = vn.gate_mass_survey(make_onnx(tmp_path / "lan.onnx", (1, 6)), DDM_CONFIG)
+        assert gate["passed"] and not gate.get("skipped")
+        assert gate["verdict"] == "warn"
+        assert expected_in_warning in gate["warning"]
+        assert "error" not in gate
+
+    @pytest.mark.parametrize(
+        "p99, frac_10, expected_in_error",
+        [
+            (0.101, 0.0, "total.p99_abs_dev 0.1010 > 0.1"),
+            (0.02, 0.021, "total.frac_gt_0.10 0.0210 > 0.02"),
+            (0.3, 0.1, "total.p99_abs_dev 0.3000 > 0.1; total.frac_gt_0.10 0.1000"),
+        ],
+    )
+    def test_fails_past_the_fail_lines(
+        self, tmp_path, fake_derive, p99, frac_10, expected_in_error
+    ):
+        fake_derive.survey_result = canned_survey(
+            p99=p99, frac_gt_0_05=0.05, frac_gt_0_10=frac_10
+        )
+        gate = vn.gate_mass_survey(make_onnx(tmp_path / "lan.onnx", (1, 6)), DDM_CONFIG)
+        assert not gate["passed"] and not gate.get("skipped")
+        assert gate["verdict"] == "fail"
+        assert expected_in_error in gate["error"]
+        # The survey is still recorded on a failure: that is what says where.
+        assert gate["survey"]["total"]["p99_abs_dev"] == p99
+
+    def test_exactly_at_a_line_is_not_past_it(self, tmp_path, fake_derive):
+        fake_derive.survey_result = canned_survey(
+            p99=0.10, frac_gt_0_05=0.01, frac_gt_0_10=0.02
+        )
+        gate = vn.gate_mass_survey(make_onnx(tmp_path / "lan.onnx", (1, 6)), DDM_CONFIG)
+        assert gate["passed"]
+        # Past the warn lines (0.05 / 0.01) but not past the fail lines.
+        assert gate["verdict"] == "warn"
+
+    def test_thresholds_are_parameters_not_constants(self, tmp_path, fake_derive):
+        fake_derive.survey_result = canned_survey(p99=0.12, frac_gt_0_10=0.03)
+        path = make_onnx(tmp_path / "lan.onnx", (1, 6))
+        assert not vn.gate_mass_survey(path, DDM_CONFIG)["passed"]
+        loose = vn.gate_mass_survey(
+            path, DDM_CONFIG, p99_max=0.2, frac_gt_0_10_max=0.05
+        )
+        assert loose["passed"]
+        assert loose["p99_max"] == 0.2 and loose["frac_gt_0_10_max"] == 0.05
+
+    def test_a_survey_that_raises_is_a_failed_gate_not_a_traceback(
+        self, tmp_path, fake_derive
+    ):
+        fake_derive.survey_error = ValueError("predictor expects rows of width 6")
+        gate = vn.gate_mass_survey(make_onnx(tmp_path / "lan.onnx", (1, 6)), DDM_CONFIG)
+        assert not gate["passed"] and not gate.get("skipped")
+        assert gate["error"] == "ValueError: predictor expects rows of width 6"
+
+    def test_an_unresolved_parameter_space_fails_rather_than_surveying_nothing(
+        self, tmp_path, fake_derive
+    ):
+        gate = vn.gate_mass_survey(make_onnx(tmp_path / "lan.onnx", (1, 6)), None)
+        assert not gate["passed"]
+        assert "parameter space" in gate["error"]
+        assert fake_derive.calls == []
+
+
+class TestMassSurveyWiring:
+    def test_a_lan_report_runs_the_survey_after_density(self, tmp_path, fake_derive):
+        fake_derive.survey_result = canned_survey(p99=0.080, frac_gt_0_05=0.019)
+        report = validate_network(
+            make_onnx(tmp_path / "lan.onnx", (1, 6)),
+            model_name="ddm",
+            skip_hssm=True,
+            skip_density=True,
+        )
+        assert [g["gate"] for g in report["gates"]][-2:] == ["density", "mass_survey"]
+        gate = report["gates"][-1]
+        assert gate["verdict"] == "warn" and gate["passed"]
+        assert report["passed"]
+        # The real ssms config for ddm went to the survey, t included.
+        _, _, bounds, params, choices, kwargs = fake_derive.calls[1]
+        assert params == ["v", "a", "z", "t"]
+        assert kwargs["onset_param"] == "t"
+        assert kwargs["n_theta"] == 20_000
+        assert len(bounds[0]) == 4 and list(choices) == [-1, 1]
+
+    def test_a_failing_survey_fails_the_report(self, tmp_path, fake_derive):
+        fake_derive.survey_result = canned_survey(p99=0.2, frac_gt_0_10=0.1)
+        report = validate_network(
+            make_onnx(tmp_path / "lan.onnx", (1, 6)),
+            model_name="ddm",
+            skip_hssm=True,
+            skip_density=True,
+        )
+        assert not report["passed"]
+        assert not report["gates"][-1]["passed"]
+
+    def test_the_flags_reach_the_gate(self, tmp_path, fake_derive):
+        fake_derive.survey_result = canned_survey(p99=0.12, frac_gt_0_10=0.03)
+        report = validate_network(
+            make_onnx(tmp_path / "lan.onnx", (1, 6)),
+            model_name="ddm",
+            skip_hssm=True,
+            skip_density=True,
+            mass_survey_p99_max=0.15,
+            mass_survey_frac_gt_0_10_max=0.04,
+        )
+        gate = report["gates"][-1]
+        assert gate["passed"]
+        assert gate["p99_max"] == 0.15 and gate["frac_gt_0_10_max"] == 0.04
+
+    def test_skip_mass_survey_is_reported_as_a_skip(self, tmp_path, fake_derive):
+        report = validate_network(
+            make_onnx(tmp_path / "lan.onnx", (1, 6)),
+            model_name="ddm",
+            skip_hssm=True,
+            skip_density=True,
+            skip_mass_survey=True,
+        )
+        gate = report["gates"][-1]
+        assert gate["skipped"] and gate["passed"]
+        assert gate["reason"] == "--skip-mass-survey"
+        # The skip must actually take effect: nothing was loaded or surveyed.
+        assert fake_derive.calls == []
+
+    def test_aux_reports_do_not_carry_the_survey(self, tmp_path, fake_derive):
+        report = validate_network(
+            make_onnx(tmp_path / "opn.onnx", (1, 5)),
+            model_name="ddm",
+            network_type="opn",
+            **AUX_SKIPS,
+        )
+        assert "mass_survey" not in {g["gate"] for g in report["gates"]}
+        assert fake_derive.calls == []
+
+    def test_cli_flags_are_spelled_as_documented(self, tmp_path, fake_derive):
+        from typer.testing import CliRunner
+
+        fake_derive.survey_result = canned_survey(p99=0.12, frac_gt_0_10=0.03)
+        path = make_onnx(tmp_path / "lan.onnx", (1, 6))
+        result = CliRunner().invoke(
+            vn.app,
+            [
+                "--onnx-path",
+                str(path),
+                "--model-name",
+                "ddm",
+                "--skip-hssm",
+                "--skip-density",
+                "--mass-survey-p99-max",
+                "0.15",
+                "--mass-survey-frac-gt-0.10-max",
+                "0.04",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        line = json.loads(result.output.strip().splitlines()[-1])
+        assert line["gates"]["mass_survey"] == "passed"
+        report = json.loads((tmp_path / "validation_report.json").read_text())
+        assert report["gates"][-1]["p99_max"] == 0.15
+        assert report["gates"][-1]["frac_gt_0_10_max"] == 0.04
+
+        result = CliRunner().invoke(
+            vn.app,
+            ["--onnx-path", str(path), "--model-name", "ddm", "--skip-hssm"]
+            + ["--skip-density", "--skip-mass-survey"],
+        )
+        assert result.exit_code == 0, result.output
+        line = json.loads(result.output.strip().splitlines()[-1])
+        assert line["gates"]["mass_survey"] == "skipped"
+
+
+class TestAccuracyStrata:
+    """The accuracy draws cover the full box, half of them at its edge."""
+
+    def test_twenty_draws_are_ten_core_and_ten_edge(self, tmp_path, monkeypatch):
+        path = make_constant_onnx(tmp_path / "half.onnx", 5, np.log(0.5))
+        monkeypatch.setattr(vn, "aux_truth", TestAccuracyGate.constant_truth(0.5))
+        result = gate_accuracy(path, "ddm", "cpn")
+        assert result["passed"], result
+        assert result["n_param_draws"] == 20
+        assert result["n_core_draws"] == 10 and result["n_edge_draws"] == 10
+        assert result["shrink"] == 0.1
+        strata = [d["stratum"] for d in result["draws"]]
+        assert strata == ["core", "edge"] * 10
+        # The choice code still cycles over both strata.
+        assert [d["choice"] for d in result["draws"]][:4] == [-1.0, 1.0, -1.0, 1.0]
+
+    def test_edge_draws_lie_outside_the_shrunk_box_and_core_draws_inside(
+        self, tmp_path, monkeypatch
+    ):
+        import ssms
+
+        path = make_constant_onnx(tmp_path / "half.onnx", 5, np.log(0.5))
+        monkeypatch.setattr(vn, "aux_truth", TestAccuracyGate.constant_truth(0.5))
+        config = ssms.config.model_config["ddm"]
+        lower, upper = (np.asarray(b, dtype=float) for b in config["param_bounds"])
+        result = gate_accuracy(path, "ddm", "cpn", n_param_draws=40, seed=3)
+        for d in result["draws"]:
+            theta = np.asarray(d["theta"])
+            assert np.all(theta >= lower) and np.all(theta <= upper)
+            inside = vn._inside_shrunk_box(theta, config, 0.1)
+            assert inside == (d["stratum"] == "core"), d
+
+    def test_total_mass_is_none_without_lanfactory_derive(self, tmp_path, monkeypatch):
+        assert "lanfactory.derive" not in sys.modules
+        path = make_constant_onnx(tmp_path / "half.onnx", 5, np.log(0.5))
+        monkeypatch.setattr(vn, "aux_truth", TestAccuracyGate.constant_truth(0.5))
+        lan = make_onnx(tmp_path / "ddm.onnx", (1, 6))
+        result = gate_accuracy(path, "ddm", "cpn", n_param_draws=4, lan_onnx=lan)
+        assert result["passed"]
+        assert [d["total_mass"] for d in result["draws"]] == [None] * 4
+
+    def test_total_mass_is_the_lans_mass_at_each_theta_on_the_onset_grid(
+        self, tmp_path, monkeypatch, fake_derive
+    ):
+        path = make_constant_onnx(tmp_path / "half.onnx", 5, np.log(0.5))
+        monkeypatch.setattr(vn, "aux_truth", TestAccuracyGate.constant_truth(0.5))
+        lan = make_onnx(tmp_path / "ddm.onnx", (1, 6))
+        result = gate_accuracy(path, "ddm", "cpn", n_param_draws=4, lan_onnx=lan)
+        assert result["passed"]
+        assert [d["total_mass"] for d in result["draws"]] == [0.97] * 4
+        assert fake_derive.calls[0] == ("load", str(lan))
+        masses = [c for c in fake_derive.calls if c[0] == "mass"]
+        assert [m[1] for m in masses] == [d["theta"] for d in result["draws"]]
+        # ddm's t is its fourth parameter: the grid is refined at that onset.
+        assert all(m[3].onset_index == 3 for m in masses)
+        assert all(list(m[2]) == [-1, 1] for m in masses)
+
+    def test_total_mass_needs_a_lan_to_evaluate(
+        self, tmp_path, monkeypatch, fake_derive
+    ):
+        path = make_constant_onnx(tmp_path / "half.onnx", 5, np.log(0.5))
+        monkeypatch.setattr(vn, "aux_truth", TestAccuracyGate.constant_truth(0.5))
+        result = gate_accuracy(path, "ddm", "cpn", n_param_draws=2)
+        assert [d["total_mass"] for d in result["draws"]] == [None, None]
+        assert fake_derive.calls == []
+
+    def test_validate_network_hands_the_lan_path_to_the_accuracy_gate(
+        self, tmp_path, monkeypatch, fake_derive
+    ):
+        path = make_constant_onnx(tmp_path / "half.onnx", 5, np.log(0.5))
+        monkeypatch.setattr(
+            vn,
+            "aux_truth",
+            lambda *a, **k: {"truth": 0.5, "truth_mc_se": 0.0016, "n_sim": 100_000},
+        )
+        lan = make_onnx(tmp_path / "ddm.onnx", (1, 6))
+        report = validate_network(
+            path, model_name="ddm", network_type="cpn", skip_hssm=True, lan_onnx=lan
+        )
+        gate = {g["gate"]: g for g in report["gates"]}["accuracy"]
+        assert gate["passed"]
+        assert all(d["total_mass"] == 0.97 for d in gate["draws"])
+        assert {d["stratum"] for d in gate["draws"]} == {"core", "edge"}
+
+    def test_an_edge_draw_needs_a_margin(self):
+        with pytest.raises(ValueError, match="shrink > 0"):
+            vn._draw_theta_edge(DDM_CONFIG, np.random.default_rng(0), shrink=0.0)
 
 
 @pytest.mark.production

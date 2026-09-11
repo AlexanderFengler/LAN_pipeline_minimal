@@ -34,6 +34,7 @@ ALL_RAN = dict(
     parity=(True, False),
     hssm_load=(True, False),
     density=(True, False),
+    mass_survey=(True, False),
 )
 
 
@@ -41,6 +42,27 @@ class TestGateVerdict:
     def test_accepts_a_report_where_every_gate_ran(self):
         ok, reason = gate_verdict(report(**ALL_RAN))
         assert ok, reason
+
+    def test_the_mass_survey_is_advisory_so_its_skip_does_not_block(self):
+        # Under the locked LANfactory the survey always skips itself; it is
+        # deliberately absent from REQUIRED_GATES until the lock moves.
+        skipped_survey = {**ALL_RAN, "mass_survey": (True, True)}
+        ok, reason = gate_verdict(report(**skipped_survey))
+        assert ok, reason
+        # A report from before the gate existed carries no such entry at all.
+        without_survey = {k: v for k, v in ALL_RAN.items() if k != "mass_survey"}
+        ok, reason = gate_verdict(report(**without_survey))
+        assert ok, reason
+
+    def test_a_failed_mass_survey_still_refuses_like_any_failed_gate(self):
+        failing = {**ALL_RAN, "mass_survey": (False, False)}
+        r = report(**failing)
+        next(g for g in r["gates"] if g["gate"] == "mass_survey")["error"] = (
+            "total.p99_abs_dev 0.2000 > 0.1"
+        )
+        ok, reason = gate_verdict(r)
+        assert not ok
+        assert "mass_survey" in reason and "0.2000" in reason
 
     def test_a_skipped_required_gate_is_not_a_pass(self):
         # The trap this function exists for: skipped gates report passed=True,
@@ -67,7 +89,9 @@ class TestGateVerdict:
     def test_a_failed_gate_is_reported_with_its_error(self):
         failing = {**ALL_RAN, "density": (False, False)}
         r = report(**failing)
-        r["gates"][-1]["error"] = "worst_ratio 13.4 > 3.0"
+        next(g for g in r["gates"] if g["gate"] == "density")["error"] = (
+            "worst_ratio 13.4 > 3.0"
+        )
         ok, reason = gate_verdict(r)
         assert not ok
         assert "worst_ratio 13.4" in reason
