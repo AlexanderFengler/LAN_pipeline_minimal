@@ -220,6 +220,84 @@ def _draw_theta(
     return lower_in + (upper_in - lower_in) * rng.uniform(size=lower.shape)
 
 
+def _inside_shrunk_box(theta: np.ndarray, model_config: dict, shrink: float) -> bool:
+    """Whether ``theta`` lies in the training box shrunk by ``shrink`` a side."""
+    lower, upper = (np.asarray(b, dtype=float) for b in model_config["param_bounds"])
+    span = upper - lower
+    return bool(
+        np.all(theta >= lower + shrink * span)
+        and np.all(theta <= upper - shrink * span)
+    )
+
+
+def _draw_theta_edge(
+    model_config: dict,
+    rng: np.random.Generator,
+    shrink: float,
+    max_tries: int = 10_000,
+) -> np.ndarray:
+    """One uniform draw from the full box that lies OUTSIDE the shrunk box.
+
+    Rejection-sampled: a full-box draw is kept only when at least one of its
+    coordinates falls in the ``shrink`` margin. For ddm's four parameters
+    that is 59 % of the box, and it only grows with the parameter count, so
+    the loop ends in a handful of tries; ``max_tries`` is a guard against a
+    ``shrink`` so small that the margin has effectively no volume.
+    """
+    if shrink <= 0.0:
+        raise ValueError("an edge stratum needs shrink > 0: nothing lies outside")
+    for _ in range(max_tries):
+        theta = _draw_theta(model_config, rng)
+        if not _inside_shrunk_box(theta, model_config, shrink):
+            return theta
+    raise RuntimeError(f"no edge draw in {max_tries} tries at shrink={shrink}")
+
+
+def _lan_total_mass(lan_onnx: Path | None, model_config: dict):
+    """A ``theta -> total mass`` function for the base LAN, or None.
+
+    None when there is no LAN path to evaluate or ``lanfactory.derive`` is
+    not importable (the locked LANfactory predates it). The mass is
+    ``choice_mass`` on LANfactory's onset-refined grid, keyed on the index of
+    the model's ``t`` parameter when it has one, so a failing accuracy draw
+    can be attributed: a cpn/opn derived from a LAN that is mis-normalised
+    at that θ inherits the error, and the number says so. Advisory only —
+    any failure here is logged and yields None, never a failed gate.
+    """
+    if lan_onnx is None:
+        return None
+    try:
+        from lanfactory.derive import (
+            IntegrationGrid,
+            OnsetGrid,
+            choice_mass,
+            load_onnx_predictor,
+        )
+    except ImportError:
+        return None
+    try:
+        predictor = load_onnx_predictor(lan_onnx)
+        params = list(model_config["params"])
+        grid = (
+            OnsetGrid(onset_index=params.index("t"))
+            if "t" in params
+            else IntegrationGrid()
+        )
+        choices = list(model_config["choices"])
+    except Exception as e:  # noqa: BLE001 - attribution must not break the gate
+        logger.warning(f"LAN total_mass unavailable for the accuracy draws: {e}")
+        return None
+
+    def total(theta: np.ndarray) -> float | None:
+        try:
+            return float(choice_mass(predictor, theta, choices, grid=grid).total[0])
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"LAN total_mass failed at theta={theta.tolist()}: {e}")
+            return None
+
+    return total
+
+
 def _hssm_model_kwargs(model_name: str, model_config: dict) -> dict:
     """Extra ``hssm.HSSM`` kwargs for a model absent from HSSM's registry.
 
@@ -906,6 +984,7 @@ def gate_accuracy(
     mean_abs_max: float = DEFAULT_ACCURACY_MEAN_ABS_MAX,
     max_abs_max: float = DEFAULT_ACCURACY_MAX_ABS_MAX,
     seed: int = 0,
+    lan_onnx: Path | None = None,
 ) -> dict:
     """A4: the network's probability tracks simulation across the box.
 
@@ -916,6 +995,18 @@ def gate_accuracy(
     simulation (clipped to ssms' deadline bounds): a deadline drawn uniformly
     from those bounds makes most DDM draws trivially ≈ 0 and the comparison
     says nothing.
+
+    The draws are stratified over the FULL box, alternating: even draws come
+    from the box shrunk by ``shrink`` a side (the ``core`` stratum, as
+    before), odd draws from the full box but outside the shrunk box (the
+    ``edge`` stratum), so 20 draws are 10 + 10. A survey of the published
+    ddm LAN found its mass off by 10-20 % in two regions at the very edge of
+    the box — regions the shrunk box never samples — and an auxiliary net
+    derived from that LAN inherits the error exactly there. Each record says
+    which ``stratum`` it came from, and, when ``lan_onnx`` is given and
+    ``lanfactory.derive`` is importable, the base LAN's ``total_mass`` at
+    that θ, so a failing draw can be attributed to the LAN rather than to the
+    derived net; otherwise ``total_mass`` is None. The pass rule is unchanged.
 
     Every output must be finite and ≤ 0 — a raw-logit export fails here
     before any truth is simulated.
@@ -929,11 +1020,19 @@ def gate_accuracy(
         declared_choices = list(model_config["choices"])
         session = ort.InferenceSession(str(onnx_path))
         input_name = session.get_inputs()[0].name
+        lan_mass = _lan_total_mass(lan_onnx, model_config)
 
         per_draw = []
         for draw in range(n_param_draws):
-            theta = _draw_theta(model_config, rng, shrink)
-            record: dict[str, Any] = {"theta": [float(x) for x in theta]}
+            if draw % 2 == 0 or shrink <= 0.0:
+                stratum, theta = "core", _draw_theta(model_config, rng, shrink)
+            else:
+                stratum, theta = "edge", _draw_theta_edge(model_config, rng, shrink)
+            record: dict[str, Any] = {
+                "theta": [float(x) for x in theta],
+                "stratum": stratum,
+                "total_mass": None if lan_mass is None else lan_mass(theta),
+            }
             if network_type == "cpn":
                 trailing = float(declared_choices[draw % len(declared_choices)])
                 record["choice"] = trailing
@@ -986,6 +1085,9 @@ def gate_accuracy(
         mean_abs_max=mean_abs_max,
         max_abs_max=max_abs_max,
         n_param_draws=n_param_draws,
+        n_core_draws=sum(d["stratum"] == "core" for d in per_draw),
+        n_edge_draws=sum(d["stratum"] == "edge" for d in per_draw),
+        shrink=shrink,
         n_sim=n_sim,
         draws=per_draw,
     )
@@ -1142,6 +1244,7 @@ def validate_network(
                     network_type,
                     mean_abs_max=accuracy_mean_abs_max,
                     max_abs_max=accuracy_max_abs_max,
+                    lan_onnx=lan_onnx,
                 )
             )
 
