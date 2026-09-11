@@ -521,8 +521,19 @@ def aux_provenance(params: Mapping[str, str], network_type: str) -> dict[str, st
 
 
 def forwarded_tags(tags: Mapping[str, str]) -> dict[str, str]:
-    """The training-run tags that travel to the publish run, when present."""
-    return {key: str(tags[key]) for key in AUX_FORWARDED_TAGS if key in tags}
+    """The training-run tags that travel to the publish run, when present.
+
+    A tag MLflow stored as ``"None"`` or ``""`` is absent, not a value:
+    LANfactory stringifies every derive_stats entry, and the survey reports
+    ``leak_below_onset`` as ``None`` when the model has no onset parameter, so
+    the tag arrives as the string ``"None"``. Forwarding it verbatim would put
+    a ``"None"`` tag on the publish run and crash the card at ``float()``.
+    """
+    return {
+        key: str(tags[key])
+        for key in AUX_FORWARDED_TAGS
+        if key in tags and _present(tags[key])
+    }
 
 
 def _card_number(value: object, digits: int = 4) -> str:
@@ -639,12 +650,18 @@ def write_aux_model_card(
     # The tail-policy record, only claimed when the training run carries it:
     # forwarded_tags forwards these tags when present, so a card saying they
     # are "recorded on the training and publish runs" would be false for a
-    # run that has none. Each figure is stated or its absence is, never
-    # silently dropped: the total-mass stats say how far the source LAN was
-    # from normalised before its labels were renormalised, the fallback
-    # fraction says how much of the box that renormalisation was not trusted
-    # for, and the leak says how much mass sat below the onset.
-    tags = training_tags or {}
+    # run that has none. The total-mass stats, the fallback fraction and the
+    # onset leak are each stated or their absence is: the mass stats say how
+    # far the source LAN was from normalised before its labels were
+    # renormalised, the fallback fraction says how much of the box that
+    # renormalisation was not trusted for, and the leak says how much mass sat
+    # below the onset. The mass past max_t is quoted only when present. A tag
+    # stored as "None" (see forwarded_tags) counts as absent here too, so a
+    # caller handing the card raw run tags gets an absence sentence, not a
+    # ValueError.
+    tags = {
+        key: value for key, value in (training_tags or {}).items() if _present(value)
+    }
     masses = {
         stat: tags.get(f"derive_total_mass_{stat}") for stat in ("mean", "min", "max")
     }
