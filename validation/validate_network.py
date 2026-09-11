@@ -24,6 +24,19 @@ G1-G3 are mechanical. G4 is statistical, and it calibrates itself against the
 sampling noise of the simulator rather than against a fixed number — see
 DEFAULT_HELLINGER_RATIO_MAX.
 
+A LAN gets a fifth, advisory gate after G4:
+
+    G5 mass_survey — the network's total mass (summed over choices, integrated
+                    over rt on LANfactory's onset-refined grid) is surveyed at
+                    20 000 θ over the FULL training box, and the tails of the
+                    |total − 1| distribution are judged. G4 samples five θ from
+                    the 10 %-shrunk box, so it cannot see the defective regions
+                    a survey of the published ddm LAN found at the box edge
+                    (1.9 % of the box beyond 0.05, up to +0.22); it would fail
+                    that network with probability 0.06 %. The survey needs
+                    ``lanfactory.derive`` and skips itself, with a stated
+                    reason, while the lock pins a LANfactory without it.
+
 Auxiliary networks (cpn / opn / gonogo) are not densities, so G3 and G4 do not
 apply to them. They get their own pair after G1 and G2:
 
@@ -97,6 +110,28 @@ DEFAULT_MASS_RANGE = (0.9, 1.1)
 # than sampling error.
 DEFAULT_HELLINGER_RATIO_MAX = 3.0
 
+# G5 thresholds — PROVISIONAL: freeze after the four modern LANs (ddm_sdv,
+# gamma_drift, gamma_drift_angle, angle_extended) are surveyed. Set from the
+# one survey that exists, the Hub ddm LAN at 20 000 θ on the onset-refined
+# grid: median |total − 1| 0.0037, p99 0.080, min 0.877 / max 1.219, 1.9 % of
+# the box beyond 0.05, all of it in two regions at the box edge. That network
+# is in production and demonstrably usable, so it must WARN, not FAIL: the
+# warn line sits under its p99 and the fail line above it. A network whose
+# p99 is past 0.10, or that is off by more than 0.10 on over 2 % of its box,
+# is mis-normalised somewhere a user will sample. Exposed as CLI flags so the
+# freezing run needs no code change; do not loosen them to pass a candidate.
+DEFAULT_MASS_SURVEY_P99_MAX = 0.10
+DEFAULT_MASS_SURVEY_FRAC_GT_0_10_MAX = 0.02
+MASS_SURVEY_WARN_P99 = 0.05
+MASS_SURVEY_WARN_FRAC_GT_0_05 = 0.01
+MASS_SURVEY_N_THETA = 20_000
+# The survey lives in LANfactory's derive package, which the locked LANfactory
+# (git main) does not have yet. The gate skips itself with this reason and
+# activates on its own once the lock moves, like the cpn A3 gate does for HSSM.
+LANFACTORY_DERIVE_SKIP_REASON = (
+    "lanfactory.derive not available; refresh the lock after LANfactory L1 merges"
+)
+
 # Inputs beyond the parameter vector, per network type. The trailing inputs
 # come last in the graph, after θ (list_params order) and any extra_fields.
 EXTRA_INPUTS_BY_NETWORK_TYPE = {
@@ -112,10 +147,11 @@ INPUT_LAYOUT_BY_NETWORK_TYPE = {
     "opn": "len(param_space) + deadline for an OPN",
     "gonogo": "len(param_space) + deadline for a gonogo network",
 }
-# The gate names each type reports, in order. A LAN's list is unchanged: the
-# publisher (REQUIRED_GATES) and the pinned tests key on it.
+# The gate names each type reports, in order. The publisher (REQUIRED_GATES)
+# and the pinned tests key on a LAN's list; mass_survey was appended to it
+# deliberately and is NOT required — a skip there never blocks a publish.
 GATES_BY_NETWORK_TYPE = {
-    "lan": ("structure", "parity", "hssm_load", "density"),
+    "lan": ("structure", "parity", "hssm_load", "density", "mass_survey"),
     "cpn": ("structure", "parity", "hssm_missing_load", "accuracy"),
     "opn": ("structure", "parity", "hssm_missing_load", "accuracy"),
     "gonogo": ("structure", "parity", "hssm_missing_load", "accuracy"),
@@ -579,6 +615,98 @@ def gate_density(
     )
 
 
+def gate_mass_survey(
+    onnx_path: Path,
+    model_config: dict | None,
+    *,
+    n_theta: int = MASS_SURVEY_N_THETA,
+    seed: int = 0,
+    p99_max: float = DEFAULT_MASS_SURVEY_P99_MAX,
+    frac_gt_0_10_max: float = DEFAULT_MASS_SURVEY_FRAC_GT_0_10_MAX,
+) -> dict:
+    """G5: the total mass is ~1 over the WHOLE box, not just where G4 looked.
+
+    Runs LANfactory's ``survey`` — ``n_theta`` uniform draws over the full
+    training box, total mass on the onset-refined grid (a uniform 1000-point
+    grid carries 15-25 % quadrature error at a < 0.5, which would be blamed
+    on the network) — and judges the tails of |total − 1|:
+
+        FAIL  total.p99_abs_dev > p99_max  or  total.frac_gt_0.10 > frac_gt_0_10_max
+        WARN  total.p99_abs_dev > MASS_SURVEY_WARN_P99
+              or total.frac_gt_0.05 > MASS_SURVEY_WARN_FRAC_GT_0_05
+              (passed=True, with a ``warning`` detail)
+
+    Skipped, with LANFACTORY_DERIVE_SKIP_REASON, while ``lanfactory.derive``
+    is not importable; the survey dict is small and recorded whole, so a
+    reader can see which parameter bins carry the deviation.
+    """
+    try:
+        from lanfactory.derive import load_onnx_predictor, survey
+    except ImportError:
+        return _result(
+            "mass_survey", True, skipped=True, reason=LANFACTORY_DERIVE_SKIP_REASON
+        )
+    if model_config is None:
+        return _result(
+            "mass_survey",
+            False,
+            error="the model's parameter space could not be resolved from ssms",
+        )
+
+    try:
+        params = list(model_config["params"])
+        result = survey(
+            load_onnx_predictor(onnx_path),
+            model_config["param_bounds"],
+            params,
+            list(model_config["choices"]),
+            n_theta=n_theta,
+            seed=seed,
+            onset_param="t" if "t" in params else None,
+        )
+        total = result["total"]
+        p99 = float(total["p99_abs_dev"])
+        frac_gt_0_10 = float(total["frac_gt_0.10"])
+        frac_gt_0_05 = float(total["frac_gt_0.05"])
+    except Exception as e:  # noqa: BLE001
+        return _result("mass_survey", False, error=f"{type(e).__name__}: {e}")
+
+    details: dict[str, Any] = {
+        "p99_abs_dev": p99,
+        "frac_gt_0.10": frac_gt_0_10,
+        "frac_gt_0.05": frac_gt_0_05,
+        "p99_max": p99_max,
+        "frac_gt_0_10_max": frac_gt_0_10_max,
+        "warn_p99": MASS_SURVEY_WARN_P99,
+        "warn_frac_gt_0_05": MASS_SURVEY_WARN_FRAC_GT_0_05,
+        "n_theta": result.get("n_theta", n_theta),
+        "seconds": result.get("seconds"),
+        "survey": result,
+    }
+    failures = []
+    if p99 > p99_max:
+        failures.append(f"total.p99_abs_dev {p99:.4f} > {p99_max}")
+    if frac_gt_0_10 > frac_gt_0_10_max:
+        failures.append(f"total.frac_gt_0.10 {frac_gt_0_10:.4f} > {frac_gt_0_10_max}")
+    if failures:
+        return _result(
+            "mass_survey", False, verdict="fail", error="; ".join(failures), **details
+        )
+
+    warnings = []
+    if p99 > MASS_SURVEY_WARN_P99:
+        warnings.append(f"total.p99_abs_dev {p99:.4f} > {MASS_SURVEY_WARN_P99}")
+    if frac_gt_0_05 > MASS_SURVEY_WARN_FRAC_GT_0_05:
+        warnings.append(
+            f"total.frac_gt_0.05 {frac_gt_0_05:.4f} > {MASS_SURVEY_WARN_FRAC_GT_0_05}"
+        )
+    if warnings:
+        return _result(
+            "mass_survey", True, verdict="warn", warning="; ".join(warnings), **details
+        )
+    return _result("mass_survey", True, verdict="pass", **details)
+
+
 def _hssm_version_supports_cpn_response() -> tuple[bool, str]:
     """Whether the installed HSSM feeds ``response`` to a CPN; and its version.
 
@@ -908,6 +1036,9 @@ def validate_network(
     skip_accuracy: bool = False,
     accuracy_mean_abs_max: float = DEFAULT_ACCURACY_MEAN_ABS_MAX,
     accuracy_max_abs_max: float = DEFAULT_ACCURACY_MAX_ABS_MAX,
+    skip_mass_survey: bool = False,
+    mass_survey_p99_max: float = DEFAULT_MASS_SURVEY_P99_MAX,
+    mass_survey_frac_gt_0_10_max: float = DEFAULT_MASS_SURVEY_FRAC_GT_0_10_MAX,
 ) -> dict:
     """Run every gate for the network type and return the report."""
     onnx_path = Path(onnx_path)
@@ -930,10 +1061,12 @@ def validate_network(
     aux_category = resolve_aux_category(network_type, aux_category)
 
     expected_input_dim = None
+    model_config = None
     try:
         import ssms
 
-        n_params = len(ssms.config.model_config[model_name]["params"])
+        model_config = ssms.config.model_config[model_name]
+        n_params = len(model_config["params"])
         expected_input_dim = n_params + EXTRA_INPUTS_BY_NETWORK_TYPE[network_type]
     except Exception as e:  # noqa: BLE001 - an unknown model just weakens G1
         logger.warning(f"Could not resolve the parameter space for {model_name}: {e}")
@@ -972,6 +1105,16 @@ def validate_network(
                 if skip_density
                 else gate_density(
                     onnx_path, model_name, hellinger_ratio_max=hellinger_ratio_max
+                )
+            )
+            gates.append(
+                _result("mass_survey", True, skipped=True, reason="--skip-mass-survey")
+                if skip_mass_survey
+                else gate_mass_survey(
+                    onnx_path,
+                    model_config,
+                    p99_max=mass_survey_p99_max,
+                    frac_gt_0_10_max=mass_survey_frac_gt_0_10_max,
                 )
             )
         elif network_type == "gonogo":
@@ -1052,9 +1195,20 @@ def main(
     skip_density: bool = typer.Option(False, "--skip-density"),
     skip_hssm: bool = typer.Option(False, "--skip-hssm"),
     skip_accuracy: bool = typer.Option(False, "--skip-accuracy"),
+    skip_mass_survey: bool = typer.Option(False, "--skip-mass-survey"),
     hellinger_ratio_max: float = typer.Option(
         DEFAULT_HELLINGER_RATIO_MAX,
         help="Max Hellinger relative to the measured sampling floor.",
+    ),
+    mass_survey_p99_max: float = typer.Option(
+        DEFAULT_MASS_SURVEY_P99_MAX,
+        "--mass-survey-p99-max",
+        help="Max p99 of |total mass - 1| over the survey's full-box draws (provisional).",
+    ),
+    mass_survey_frac_gt_0_10_max: float = typer.Option(
+        DEFAULT_MASS_SURVEY_FRAC_GT_0_10_MAX,
+        "--mass-survey-frac-gt-0.10-max",
+        help="Max fraction of the box where |total mass - 1| > 0.10 (provisional).",
     ),
     accuracy_mean_abs_max: float = typer.Option(
         DEFAULT_ACCURACY_MEAN_ABS_MAX,
@@ -1085,6 +1239,9 @@ def main(
             skip_accuracy=skip_accuracy,
             accuracy_mean_abs_max=accuracy_mean_abs_max,
             accuracy_max_abs_max=accuracy_max_abs_max,
+            skip_mass_survey=skip_mass_survey,
+            mass_survey_p99_max=mass_survey_p99_max,
+            mass_survey_frac_gt_0_10_max=mass_survey_frac_gt_0_10_max,
         )
     except ValueError as e:
         raise typer.BadParameter(str(e)) from e
