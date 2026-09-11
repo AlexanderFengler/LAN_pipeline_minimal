@@ -688,8 +688,11 @@ class TestAccuracyGate:
             assert draw["network_value"] == pytest.approx(0.5, abs=1e-6)
             assert draw["abs_error"] == pytest.approx(0.0, abs=1e-6)
             assert len(draw["theta"]) == 4
-        # The choice code cycles over the model's declared choices.
-        assert [d["choice"] for d in result["draws"]] == [-1.0, 1.0, -1.0, 1.0]
+        # The choice code cycles over the model's declared choices WITHIN each
+        # stratum (draws alternate core/edge, so the pattern is -1,-1,+1,+1):
+        # each stratum sees every choice — see TestAccuracyStrata.
+        assert [d["choice"] for d in result["draws"]] == [-1.0, -1.0, 1.0, 1.0]
+        assert [d["stratum"] for d in result["draws"]] == ["core", "edge"] * 2
 
     def test_fails_when_the_network_is_far_from_the_truth(self, tmp_path, monkeypatch):
         path = make_constant_onnx(tmp_path / "half.onnx", 5, np.log(0.5))
@@ -1206,8 +1209,13 @@ class TestAccuracyStrata:
         assert result["shrink"] == 0.1
         strata = [d["stratum"] for d in result["draws"]]
         assert strata == ["core", "edge"] * 10
-        # The choice code still cycles over both strata.
-        assert [d["choice"] for d in result["draws"]][:4] == [-1.0, 1.0, -1.0, 1.0]
+        # Each stratum sees every declared choice. With two choices and two
+        # strata, cycling the choice on the draw index would alias the two
+        # (-1 only in the core, +1 only at the edge) and a cpn wrong on the
+        # +1 output in the core would pass.
+        for stratum in ("core", "edge"):
+            choices = [d["choice"] for d in result["draws"] if d["stratum"] == stratum]
+            assert choices == [-1.0, 1.0] * 5, stratum
 
     def test_edge_draws_lie_outside_the_shrunk_box_and_core_draws_inside(
         self, tmp_path, monkeypatch

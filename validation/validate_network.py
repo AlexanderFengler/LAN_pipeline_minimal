@@ -1014,7 +1014,10 @@ def gate_accuracy(
     The draws are stratified over the FULL box, alternating: even draws come
     from the box shrunk by ``shrink`` a side (the ``core`` stratum, as
     before), odd draws from the full box but outside the shrunk box (the
-    ``edge`` stratum), so 20 draws are 10 + 10. A survey of the published
+    ``edge`` stratum), so 20 draws are 10 + 10. A cpn's choice code cycles
+    on the within-stratum index, so each stratum sees every declared choice
+    — cycling on the draw index would alias choice with stratum for every
+    two-choice model and never test P(+1 | θ) in the core. A survey of the published
     ddm LAN found its mass off by 10-20 % in two regions at the very edge of
     the box — regions the shrunk box never samples — and an auxiliary net
     derived from that LAN inherits the error exactly there. Each record says
@@ -1049,7 +1052,8 @@ def gate_accuracy(
                 "total_mass": None if lan_mass is None else lan_mass(theta),
             }
             if network_type == "cpn":
-                trailing = float(declared_choices[draw % len(declared_choices)])
+                within = draw // 2  # the index inside this draw's stratum
+                trailing = float(declared_choices[within % len(declared_choices)])
                 record["choice"] = trailing
                 truth_kwargs = {"choice": trailing}
             else:
