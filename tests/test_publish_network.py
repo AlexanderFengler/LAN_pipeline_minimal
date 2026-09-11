@@ -321,6 +321,19 @@ class TestAuxProvenance:
         assert older == {"derive_total_mass_mean": "0.998"}
         assert not set(record) & set(older)
 
+    def test_a_tag_stored_as_none_is_absent_not_forwarded(self):
+        # LANfactory stringifies every derive_stats entry, and the survey
+        # reports leak_below_onset as None for a model with no onset param,
+        # so the tag arrives as the string "None". That is an absence, not a
+        # value to put on the publish run.
+        tags = {
+            "derive_total_mass_mean": "0.998",
+            "derive_fallback_frac": "",
+            "derive_leak_below_onset_p99": "None",
+            "data_origin": "null",
+        }
+        assert forwarded_tags(tags) == {"derive_total_mass_mean": "0.998"}
+
 
 class TestAuxModelCard:
     """The card generated when the operator staged none."""
@@ -471,6 +484,25 @@ class TestAuxModelCard:
         description = only_fallback["description"]
         assert "0 % of the parameter box was labelled by simulation" in description
         assert "carries no derive_leak_below_onset_p99" in description
+
+    def test_a_tag_stored_as_none_is_stated_absent_not_crashed_on(self, tmp_path):
+        # forwarded_tags drops these before the card sees them, but a caller
+        # handing the card raw run tags must get the absence sentence, not a
+        # ValueError from float("None") halfway through staging.
+        stringified = {
+            "derive_total_mass_mean": "None",
+            "derive_total_mass_min": "None",
+            "derive_total_mass_max": "None",
+            "derive_fallback_frac": "",
+            "derive_sim_past_max_t_max": "None",
+            "derive_leak_below_onset_p99": "None",
+        }
+        description = self.load(tmp_path, "cpn", stringified)["description"]
+        assert "carries no derive_total_mass" in description
+        assert "carries no derive_fallback_frac" in description
+        assert "carries no derive_leak_below_onset_p99" in description
+        assert "derive_sim_past_max_t_max" not in description
+        assert "None" not in description
 
     def test_a_card_without_gate_numbers_still_renders(self, tmp_path):
         # Defensive only: the card is written after the verdict, so a report
