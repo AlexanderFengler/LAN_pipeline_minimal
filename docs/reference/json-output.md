@@ -247,7 +247,9 @@ unless an operator card was staged:
 Values are strings, as MLflow stores params and tags. `source_lan_run_id`
 appears only when the training run carries it, and so does every key of
 `forwarded_tags`: a training run from before LANfactory logged the fallback
-fraction and the onset leak shows only the mass stats here.
+fraction and the onset leak shows only the mass stats here, and a tag the
+training run stored as `"None"` or `""` (a survey with no onset parameter
+logs `derive_leak_below_onset_p99` that way) is dropped rather than forwarded.
 
 A successful upload adds:
 

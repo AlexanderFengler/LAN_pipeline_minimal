@@ -159,9 +159,12 @@ run identity, forwards the training run's tail-policy record
 (`derive_total_mass_{mean,min,max}`, `derive_fallback_frac`,
 `derive_sim_past_max_t_max`, `derive_leak_below_onset_p99`) and `data_origin`
 tags, and logs the accuracy and missing-load scores as metrics. Each tag is
-forwarded only when the training run carries it, and the card states the
-absence of any it lacks -- an older training run has no fallback fraction or
-onset leak, and the card says so instead of inventing one.
+forwarded only when the training run carries it (a tag stored as `"None"` or
+`""` is dropped as absent). The card quotes the mass stats, the fallback
+fraction and the onset leak and states the absence of each it lacks -- an
+older training run has no fallback fraction or onset leak, and the card says
+so instead of inventing one; `derive_sim_past_max_t_max` is quoted only when
+present, and `data_origin` is forwarded but not quoted.
 
 Two refusals are absolute, and both fire before provenance is read or anything
 is staged. A `gonogo` network is never published: nothing in HSSM consumes

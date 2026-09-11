@@ -79,8 +79,11 @@ it was not trusted:
 The numbers are kept so that inheritance can be read rather than hidden: a
 LAN whose total drifts at the box edge shows up as a fallback fraction on
 every network derived from it. The publisher forwards each tag to the
-publication run when present and quotes it on the generated model card; a
-training run that lacks one gets a card that says so.
+publication run when the training run carries it (a tag MLflow stored as
+`"None"` or `""` counts as absent). The generated model card quotes the mass
+stats, the fallback fraction and the onset leak, and states the absence of
+each a training run lacks; `derive_sim_past_max_t_max` is quoted only when
+present, and `data_origin` travels as a tag without being quoted.
 
 The publisher refuses an auxiliary run that lacks any required key, so a
 network on the Hub can always be traced back to the LAN it was integrated
