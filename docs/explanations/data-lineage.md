@@ -45,7 +45,9 @@ published LAN (root file on the Hub)
             | derivation_method, aux_category,
             | integration_grid, integration_max_t
             v
-derived corpus -> training run (params above; tags derive_total_mass_*)
+derived corpus -> training run (params above; tags derive_total_mass_*,
+                                derive_fallback_frac, derive_sim_past_max_t_max,
+                                derive_leak_below_onset_p99)
             |
             v
 validation_report.json (structure, parity, hssm_missing_load, accuracy)
@@ -59,10 +61,26 @@ The keys are one contract shared by three writers: the derived corpus's
 publication run's params. `derivation_method` is `derived-from-lan` or
 `trained-from-simulation`, though only the former has a publish path today --
 a simulation-trained auxiliary network has no source LAN for this chain to
-point at; `aux_category` is `choice` for a cpn and `omission` for an opn. The `derive_total_mass_{mean,min,max}` tags record the per-file
-total mass of the integrated density, which is deliberately not renormalised:
-mass past the integration window is the source LAN's, and the number is kept
-so that inheritance can be read rather than hidden.
+point at; `aux_category` is `choice` for a cpn and `omission` for an opn.
+
+The training run also carries the derived corpus's tail-policy record as
+tags, logged by LANfactory from the corpus manifest. The labels of a derived
+corpus are renormalised by the source LAN's own total on the integration
+grid, and the record says how much that renormalisation had to do and where
+it was not trusted:
+
+| Tag | What it records |
+| --- | --- |
+| `derive_total_mass_{mean,min,max}` | The per-file total mass the LAN put on the grid, before renormalisation -- how far from normalised the source LAN was |
+| `derive_fallback_frac` | The share of the parameter box labelled by simulation instead, because the LAN's total was outside (0.98, 1.03) |
+| `derive_sim_past_max_t_max` | The most simulated mass any file placed past `max_t` |
+| `derive_leak_below_onset_p99` | The p99, over files, of the mass the LAN leaked below the onset (non-decision time) |
+
+The numbers are kept so that inheritance can be read rather than hidden: a
+LAN whose total drifts at the box edge shows up as a fallback fraction on
+every network derived from it. The publisher forwards each tag to the
+publication run when present and quotes it on the generated model card; a
+training run that lacks one gets a card that says so.
 
 The publisher refuses an auxiliary run that lacks any required key, so a
 network on the Hub can always be traced back to the LAN it was integrated

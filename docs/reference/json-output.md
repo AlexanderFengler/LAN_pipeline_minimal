@@ -198,13 +198,17 @@ the staging directory and write `validation_report.json` there:
   "run_uuid": "run-uuid",
   "staged": ["run-uuid_lan_ddm__network.onnx", "validation_report.json"],
   "gate": "all required gates ran and passed",
-  "provenance": {}
+  "provenance": {},
+  "forwarded_tags": {}
 }
 ```
 
-`provenance` is always present. It is empty for a LAN. For a cpn or opn it
-carries the derive-aux keys read from the training run, and `staged` then also
-lists the generated `model_card.yaml` unless an operator card was staged:
+`provenance` and `forwarded_tags` are always present. Both are empty for a
+LAN. For a cpn or opn `provenance` carries the derive-aux keys read from the
+training run, `forwarded_tags` the training-run tags the publish run would
+carry (the tail-policy record and `data_origin`, each only when the training
+run has it), and `staged` then also lists the generated `model_card.yaml`
+unless an operator card was staged:
 
 ```json
 {
@@ -227,12 +231,23 @@ lists the generated `model_card.yaml` unless an operator card was staged:
     "integration_grid": "1000",
     "integration_max_t": "20.0",
     "source_lan_run_id": "<optional MLflow run id of the LAN>"
+  },
+  "forwarded_tags": {
+    "derive_total_mass_mean": "0.998",
+    "derive_total_mass_min": "0.990",
+    "derive_total_mass_max": "1.000",
+    "derive_fallback_frac": "0.012",
+    "derive_sim_past_max_t_max": "0.004",
+    "derive_leak_below_onset_p99": "0.0007",
+    "data_origin": "derived"
   }
 }
 ```
 
-Values are strings, as MLflow stores params. `source_lan_run_id` appears only
-when the training run carries it.
+Values are strings, as MLflow stores params and tags. `source_lan_run_id`
+appears only when the training run carries it, and so does every key of
+`forwarded_tags`: a training run from before LANfactory logged the fallback
+fraction and the onset leak shows only the mass stats here.
 
 A successful upload adds:
 
@@ -277,9 +292,11 @@ The publish run in the `publishing` experiment carries, as params, `model`,
 `network_type`, `hf_repo`, `hf_commit` or `hf_commit_candidate`,
 `source_training_run_id`, `source_run_uuid`, `onnx_filename`, and for a cpn or
 opn every key of the `provenance` block. Tags: `schema_version`, `phase`,
-`hf_commit_verified`, `published_at`, `hf_url`, `gates_run`, and, when the
-training run carries them, `derive_total_mass_mean`, `derive_total_mass_min`,
-`derive_total_mass_max`, and `data_origin`.
+`hf_commit_verified`, `published_at`, `hf_url`, `gates_run`, and, each when
+the training run carries it, the tail-policy record `derive_total_mass_mean`,
+`derive_total_mass_min`, `derive_total_mass_max`, `derive_fallback_frac`,
+`derive_sim_past_max_t_max`, `derive_leak_below_onset_p99`, and
+`data_origin` (see [data lineage](../explanations/data-lineage.md)).
 
 Metrics are logged when the corresponding gate ran:
 

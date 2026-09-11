@@ -151,11 +151,17 @@ uv run lan-publish \
 points at; the publisher looks for artifacts carrying the run's `run_uuid`
 there.
 
-The dry-run plan gains a `provenance` block and lists the generated
+The dry-run plan gains a `provenance` block, shows under `forwarded_tags` the
+training-run tags the publish run would carry, and lists the generated
 `model_card.yaml` under `staged`; open it before repeating without
 `--dry-run`. The publish run records the provenance params beside the source
-run identity, forwards the training run's `derive_total_mass_*` and
-`data_origin` tags, and logs the accuracy and missing-load scores as metrics.
+run identity, forwards the training run's tail-policy record
+(`derive_total_mass_{mean,min,max}`, `derive_fallback_frac`,
+`derive_sim_past_max_t_max`, `derive_leak_below_onset_p99`) and `data_origin`
+tags, and logs the accuracy and missing-load scores as metrics. Each tag is
+forwarded only when the training run carries it, and the card states the
+absence of any it lacks -- an older training run has no fallback fraction or
+onset leak, and the card says so instead of inventing one.
 
 Two refusals are absolute, and both fire before provenance is read or anything
 is staged. A `gonogo` network is never published: nothing in HSSM consumes
