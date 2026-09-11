@@ -61,7 +61,8 @@ The validator writes the detailed report to disk and prints a compact result:
     "structure": "passed",
     "parity": "skipped",
     "hssm_load": "passed",
-    "density": "passed"
+    "density": "passed",
+    "mass_survey": "skipped"
   }
 }
 ```
@@ -69,7 +70,12 @@ The validator writes the detailed report to disk and prints a compact result:
 Gate states are `passed`, `failed`, or `skipped`. The process exits non-zero
 when aggregate `passed` is false. For promotion, do not rely on that aggregate:
 the publisher additionally requires structure, HSSM load, and density to be
-present and not skipped.
+present and not skipped. `mass_survey` is advisory: it is `skipped` with the
+reason `lanfactory.derive not available; refresh the lock after LANfactory L1
+merges` while the locked LANfactory has no `derive` package, and a skip there
+never blocks a publish. Once it runs, a `failed` mass survey refuses a publish
+like any other failed gate, and a warn-level result is `passed` with a
+`warning` detail in the report.
 
 An auxiliary network (`cpn`, `opn`, `gonogo`) reports a different gate set
 after `structure` and `parity`:
@@ -106,15 +112,33 @@ as applicable. Adding a nullable top-level key does not bump `schema_version`;
 the gate set a report carries is keyed on `network_type`, not on the version,
 so a consumer that reads gates by name must look at `network_type` first.
 
+In the LAN gates, `mass_survey` records its `verdict` (`pass`, `warn`, or
+`fail`), the three numbers it judged — `p99_abs_dev`, `frac_gt_0.10`, and
+`frac_gt_0.05` — the lines it judged them against (`p99_max`,
+`frac_gt_0_10_max`, `warn_p99`, `warn_frac_gt_0_05`), `n_theta`, the
+`seconds` the survey took, and the whole `survey` dict as
+`lanfactory.derive.survey` returned it: `n_theta`, `grid`, `seconds`, `total`
+and `shrunk_box` (each with `mean`, `p50_abs_dev`, `p90_abs_dev`,
+`p99_abs_dev`, `min`, `max`, `frac_gt_0.02`, `frac_gt_0.05`, `frac_gt_0.10`;
+`shrunk_box` adds `frac_of_theta`), `leak_below_onset` (`mean`, `p99`, `max`,
+or `null` for a model without an onset parameter), `by_param` (ten bins per
+parameter with `lo`, `hi`, `mean_dev`, `max_abs_dev`, `n`), and `worst_cell`.
+A warn-level result adds `warning`; a failure adds `error` and keeps the
+survey. A skip carries only `skipped` and `reason`.
+
 In the auxiliary gates, `hssm_missing_load` records `initial_logp_by_p_outlier`
 (keys `"0.0"` and `"0.05"`), `n_trials`, `n_missing`, and the `lan` it was
 assembled with; `accuracy` records `mean_abs_error`, `max_abs_error`, the two
-thresholds it was judged against, `n_param_draws`, `n_sim`, and one `draws`
-entry per parameter draw with `theta`, the `choice` or `deadline` fed to the
+thresholds it was judged against, `n_param_draws`, `n_core_draws`,
+`n_edge_draws`, the `shrink` that separates the strata, `n_sim`, and one
+`draws` entry per parameter draw with `theta`, its `stratum` (`core`: from
+the shrunk box; `edge`: from the full box outside it), the base LAN's
+`total_mass` at that θ (`null` unless `--lan-onnx` was given and
+`lanfactory.derive` is importable), the `choice` or `deadline` fed to the
 network, `network_logp`, `network_value`, `truth`, `truth_mc_se`, `abs_error`,
 and for a cpn `truth_rt_lt_max_t`. When an output is not a log-probability the
-gate fails at once with `error`, the index `draw`, and that draw's `theta` and
-`choice`/`deadline` in place of the `draws` list.
+gate fails at once with `error`, the index `draw`, and that draw's `theta`,
+`stratum`, `total_mass`, and `choice`/`deadline` in place of the `draws` list.
 
 ## Parameter-recovery shard
 

@@ -89,7 +89,10 @@ uv run python validation/validate_network.py --help
 | `--skip-density` | false | Mark density skipped (LAN) |
 | `--skip-hssm` | false | Mark the HSSM integration gate skipped (`hssm_load` or `hssm_missing_load`) |
 | `--skip-accuracy` | false | Mark accuracy skipped (cpn/opn) |
+| `--skip-mass-survey` | false | Mark the mass survey skipped (LAN); it also skips itself while `lanfactory.derive` is not importable |
 | `--hellinger-ratio-max FLOAT` | `3.0` | Maximum density error relative to sampling floor |
+| `--mass-survey-p99-max FLOAT` | `0.10` | Mass survey fail line: maximum p99 of `|total mass − 1|` over the full-box draws (provisional) |
+| `--mass-survey-frac-gt-0.10-max FLOAT` | `0.02` | Mass survey fail line: maximum fraction of the box where `|total mass − 1| > 0.10` (provisional) |
 | `--accuracy-mean-abs-max FLOAT` | `0.01` | Maximum mean `|network − truth|` over the accuracy draws (provisional) |
 | `--accuracy-max-abs-max FLOAT` | `0.03` | Maximum single-draw `|network − truth|` (provisional) |
 | `--log-level TEXT` | `WARNING` | Logging threshold |
